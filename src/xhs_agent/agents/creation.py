@@ -1,42 +1,38 @@
-"""Mock 创作 Agent。"""
+"""离线创作示例，不虚构用户经历；真实模型实现可替换此类。"""
 from __future__ import annotations
 
-from ..models import Draft, ImageRef, ResearchBrief
+from ..models import ContentRequest, Draft, ImageRef, ResearchBrief, UserProfile
+from .base import SkillEnabledAgent
 
 
-class MockCreationAgent:
-    """Mock 创作 Agent：根据简报生成标题、正文与图片引用。
+class MockCreationAgent(SkillEnabledAgent):
+    def create(self, brief: ResearchBrief, feedback: str | None = None, *,
+               request: ContentRequest, profile: UserProfile,
+               previous_draft: Draft | None = None) -> Draft:
+        if previous_draft and feedback:
+            # 离线示例保留原文并记录意见，不伪装成已完成语义修改。
+            revised = previous_draft.model_copy(deep=True)
+            revised.approved = False
+            revised.approved_at = None
+            revised.revision_notes.append(feedback)
+            revised.body += f"\n\n【待落实的修改意见（Mock）】\n{feedback}"
+            return revised
 
-    确定性输出；未来可用真实 LLM 实现替换（实现
-    :class:`~xhs_agent.agents.base.CreationAgent` 协议）。
-    """
-
-    def create(self, brief: ResearchBrief, feedback: str | None = None) -> Draft:
-        revision = bool(feedback and feedback.strip())
-        title = (
-            f"{brief.topic}｜根据反馈修订版"
-            if revision
-            else f"{brief.topic}｜新手友好·一篇讲透"
+        parts = [f"【离线示例草稿】\n{brief.topic}",
+                 f"【本次目标】\n{request.goal}",
+                 f"【面向读者】\n{brief.target_audience}",
+                 f"【表达风格】\n{profile.style}",
+                 "【内容结构】\n" + "\n".join(brief.angles)]
+        if brief.supplied_materials:
+            parts.append("【用户提供的素材】\n" + "\n".join(brief.supplied_materials))
+        real_evidence = [e for e in brief.evidence if not e.is_mock]
+        if real_evidence:
+            parts.append("【参考资料摘录（待核实）】\n" + "\n".join(
+                f"{e.excerpt}（{e.source_url}）" for e in real_evidence))
+        if brief.pending_questions:
+            parts.append("【待确认】\n" + "\n".join(brief.pending_questions))
+        return Draft(
+            title=brief.topic, body="\n\n".join(parts),
+            tags=brief.tags, content_type=request.content_type,
+            images=[ImageRef(description=f"封面方案：{brief.topic}", source="mock://cover")],
         )
-
-        parts: list[tuple[str, str]] = [
-            ("开篇", f"大家好，今天来聊聊「{brief.topic}」。这篇内容面向{brief.target_audience}，帮你少走弯路。"),
-            ("适合谁看", brief.target_audience),
-            ("痛点", "、".join(brief.pain_points)),
-            ("内容角度", "；".join(brief.angles)),
-        ]
-        if revision:
-            parts.append(("本次修订", feedback))
-        parts.append(("关键词", " ".join(brief.keywords)))
-        parts.append(("标签", " ".join(brief.tags)))
-
-        body = "\n\n".join(f"【{heading}】\n{content}" for heading, content in parts)
-
-        images = [
-            ImageRef(description=f"封面图：{brief.topic}", source="mock://cover"),
-            ImageRef(
-                description=f"配图：{brief.angles[0] if brief.angles else brief.topic}",
-                source="mock://figure",
-            ),
-        ]
-        return Draft(title=title, body=body, images=images)

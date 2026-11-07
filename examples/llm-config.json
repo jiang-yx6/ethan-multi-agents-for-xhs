@@ -1,0 +1,24 @@
+{
+  "ideation": {
+    "provider": "deepseek",
+    "model": "YOUR_MODEL_ID",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "timeout": 120,
+    "max_tokens": 4096
+  },
+  "research": {
+    "provider": "qwen",
+    "model": "YOUR_MODEL_ID",
+    "api_key_env": "DASHSCOPE_API_KEY"
+  },
+  "creation": {
+    "provider": "anthropic",
+    "model": "YOUR_MODEL_ID",
+    "api_key_env": "ANTHROPIC_API_KEY"
+  },
+  "review": {
+    "provider": "openai",
+    "model": "YOUR_MODEL_ID",
+    "api_key_env": "OPENAI_API_KEY"
+  }
+}

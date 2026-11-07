@@ -6,6 +6,7 @@ def test_duplicate_publish_rejected(service_factory):
     svc = service_factory()
     task = svc.create_task("咖啡探店")
     task_id = task.task_id
+    svc.select_idea(task_id, 0)
     svc.approve(task_id)
     first = svc.publish(task_id)
     assert first.status == "published"

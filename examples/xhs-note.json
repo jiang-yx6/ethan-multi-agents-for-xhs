@@ -1,0 +1,12 @@
+{
+  "title": "我的周末散步路线",
+  "body": "这里替换成你准备发布并愿意审核确认的真实内容。",
+  "images": [
+    {
+      "description": "本次散步的实拍照片",
+      "source": "../data/media/weekend.jpg"
+    }
+  ],
+  "tags": ["周末散步"],
+  "content_type": "分享"
+}

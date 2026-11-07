@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "skills": [
+    {
+      "id": "skill-trending-topics",
+      "name": "skill-trending-topics",
+      "description": "抓取微博、抖音、知乎、头条、B站实时热搜，筛选与创作者赛道相关的热点，输出二创选题建议。 当用户说\"今天有什么热搜\"\"热点\"\"最近大家在聊什么\"\"追热点\"\"蹭热点\"\"二创选题\"\"热搜榜\"时使用。 和 skill-news-intelligence 的区别：本 SKILL 抓分钟级实时热搜榜做快速二创选题； news-intelligence 做日级深度行业资讯聚合，不抓热搜榜。",
+      "path": "builtin/skill-trending-topics",
+      "source": {
+        "repository": "https://github.com/ZJU-REAL/Easel",
+        "revision": "5c12e42e9019d276368130b52385b770749ffa6f",
+        "original_path": "skills/builtin/skill-trending-topics",
+        "license": "Apache-2.0",
+        "license_file": "LICENSE"
+      },
+      "enabled": true,
+      "required_tools": [
+        "web_fetch"
+      ],
+      "resources": {
+        "shared/hotlist-apis.md": "shared/hotlist-apis.md"
+      },
+      "sha256": "599c0cabd66aa3347f2a719fb0565578fae3c9de7846970e98e43d95df0751d2",
+      "notes": ""
+    },
+    {
+      "id": "skill-trend-rider",
+      "name": "skill-trend-rider",
+      "description": "给定一个热点事件或话题，结合创作者账号定位，输出蹭热点的具体内容方案。 包含切入角度、内容形式、标题建议、风险提醒。 当用户说\"这个热点怎么蹭\"、\"蹭热点\"、\"怎么结合\"、\"热点和我有关吗\"、 \"追热点\"、\"热点方案\"、\"借势\"、\"怎么追这个热点\"、\"热点怎么切\"时触发。 和 skill-trending-topics 的区别：trending-topics 发现和筛选热点， trend-rider 拿到一个具体热点后规划怎么蹭、怎么切内容。",
+      "path": "builtin/skill-trend-rider",
+      "source": {
+        "repository": "https://github.com/ZJU-REAL/Easel",
+        "revision": "5c12e42e9019d276368130b52385b770749ffa6f",
+        "original_path": "skills/builtin/skill-trend-rider",
+        "license": "Apache-2.0",
+        "license_file": "LICENSE"
+      },
+      "enabled": true,
+      "required_tools": [],
+      "resources": {},
+      "sha256": "27d6080b4e6df6d6dab96a771fe1eab9a1e9316b5a2ef0b6dbcd587e27a2f1af",
+      "notes": ""
+    },
+    {
+      "id": "skill-topic-evaluator",
+      "name": "skill-topic-evaluator",
+      "description": "评估单个选题的潜力，按统一维度（流量潜力、账号匹配、 竞争差异化、时效价值、变现空间、制作成本、合规风险）打分，输出\"做/不做/改方向\"建议。 当用户说\"这个选题值不值得做\"、\"评估一下\"、\"能不能火\"、\"有没有流量\"、 \"做不做这个\"、\"选题评估\"、\"值得做吗\"、\"这个话题行不行\"、\"帮我判断一下\"时触发。 skill-content-matrix 批量生成选题池；skill-post-scorer 评估已完成内容，本 SKILL 评估尚未制作的单个选题。",
+      "path": "builtin/skill-topic-evaluator",
+      "source": {
+        "repository": "https://github.com/ZJU-REAL/Easel",
+        "revision": "5c12e42e9019d276368130b52385b770749ffa6f",
+        "original_path": "skills/builtin/skill-topic-evaluator",
+        "license": "Apache-2.0",
+        "license_file": "LICENSE"
+      },
+      "enabled": true,
+      "required_tools": [],
+      "resources": {
+        "../../shared/scoring-dimensions.md": "shared/scoring-dimensions.md"
+      },
+      "sha256": "d48264cd9715167c47147421aee08d5318fa09f1a56a0c61d325fcf52d9a4a54",
+      "notes": ""
+    },
+    {
+      "id": "skill-news-intelligence",
+      "name": "skill-news-intelligence",
+      "description": "聚合中文行业媒体、垂类资讯和平台商业动态，按创作者赛道过滤，生成结构化情报简报与可执行选题。 当用户说“行业资讯/深度情报、最近行业动态、每日简报、选题情报、财经/科技/AI 动态”时使用。 本 SKILL 做日级深度资讯；分钟级实时热搜与快速二创选题用 skill-trending-topics。",
+      "path": "builtin/skill-news-intelligence",
+      "source": {
+        "repository": "https://github.com/ZJU-REAL/Easel",
+        "revision": "5c12e42e9019d276368130b52385b770749ffa6f",
+        "original_path": "skills/builtin/skill-news-intelligence",
+        "license": "Apache-2.0",
+        "license_file": "LICENSE"
+      },
+      "enabled": true,
+      "required_tools": [
+        "python",
+        "network",
+        "requests",
+        "beautifulsoup4"
+      ],
+      "resources": {},
+      "sha256": "4ac17ef41aadfe2fd6b5af26b336277acb5d53ecd1b490601ca3a757f91d7b5a",
+      "notes": ""
+    },
+    {
+      "id": "social-content",
+      "name": "social-content",
+      "description": "通用多平台社媒内容（单条/兜底）：钩子文案、正文、标签策略和互动引导，主打**涨粉/互动/内容运营**， 支持微博/抖音/B站/知乎/公众号/X 等；平台不确定或要多平台一次成稿时的默认选择。 当用户说\"写条微博\"\"发个帖子\"\"社媒文案\"\"发什么内容\"\"帮我写个帖\"\"涨粉内容\"\"互动内容\"时使用。 边界：**小红书整套笔记/图文/种草**找 xhs-note-creator；**带货转化/卖点/详情页**找 copywriting； **严格套 PAS/AIDA 框架排版**找 post-formatter。",
+      "path": "builtin/social-content",
+      "source": {
+        "repository": "https://github.com/ZJU-REAL/Easel",
+        "revision": "5c12e42e9019d276368130b52385b770749ffa6f",
+        "original_path": "skills/builtin/social-content",
+        "license": "Apache-2.0",
+        "license_file": "LICENSE"
+      },
+      "enabled": true,
+      "required_tools": [
+        "python"
+      ],
+      "resources": {
+        "skills/shared/references/hook-title-formulas.md": "shared/references/hook-title-formulas.md",
+        "skills/shared/scripts/wordcount.py": "shared/scripts/wordcount.py",
+        "../text-polisher/references/zh-ai-markers.md": "builtin/text-polisher/references/zh-ai-markers.md",
+        "../text-polisher/references/phrases-to-remove.md": "builtin/text-polisher/references/phrases-to-remove.md",
+        "../text-polisher/references/structures-to-avoid.md": "builtin/text-polisher/references/structures-to-avoid.md",
+        "structures-to-avoid.md": "builtin/text-polisher/references/structures-to-avoid.md"
+      },
+      "sha256": "74fb2546bc2925501a09471681ead0dadad966513c43f056c5294892248becba",
+      "notes": ""
+    },
+    {
+      "id": "skill-quality-gate",
+      "name": "skill-quality-gate",
+      "description": "发布前质量关卡：合规风险检测（敏感词、绝对化用语、平台规则） + 产物质量审核（完整性、可读性、平台适配度）。一次检查，两道把关。 当用户说\"检查合规\"、\"质量检查\"、\"能不能发\"、\"有没有敏感词\"、 \"审核一下\"、\"发布前检查\"、\"质量够不够\"时使用。 合并了原 skill-check-compliance 和 skill-review-deliverable 的能力。",
+      "path": "builtin/skill-quality-gate",
+      "source": {
+        "repository": "https://github.com/ZJU-REAL/Easel",
+        "revision": "5c12e42e9019d276368130b52385b770749ffa6f",
+        "original_path": "skills/builtin/skill-quality-gate",
+        "license": "Apache-2.0",
+        "license_file": "LICENSE"
+      },
+      "enabled": true,
+      "required_tools": [],
+      "resources": {},
+      "sha256": "f98771c5831a15db2569922cf4cc348a269f6408664f6d6ffba50da1ec767ec4",
+      "notes": ""
+    }
+  ],
+  "agents": {
+    "ideation": [
+      "skill-trending-topics",
+      "skill-trend-rider",
+      "skill-topic-evaluator",
+      "skill-news-intelligence"
+    ],
+    "research": [
+      "skill-news-intelligence"
+    ],
+    "creation": [
+      "social-content"
+    ],
+    "review": [
+      "skill-quality-gate"
+    ]
+  }
+}

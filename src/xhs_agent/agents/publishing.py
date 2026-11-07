@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from ..models import Draft, PublishResult
 from ..storage import Store
+from .base import SkillEnabledAgent
 
 
-class MockPublisher:
+class MockPublisher(SkillEnabledAgent):
     """Mock 发布器：只写本地发布记录，防止重复模拟发布。
 
     **不连接小红书、不真实发布。** 未来接入真实平台时，实现

@@ -6,6 +6,10 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+SpecialistRole = Literal["ideation", "research", "creation", "review"]
+AgentRole = Literal["supervisor", "ideation", "research", "creation", "review", "publishing"]
+AGENT_ROLES: tuple[AgentRole, ...] = ("supervisor", "ideation", "research", "creation", "review", "publishing")
+
 if TYPE_CHECKING:
     from .creation import Draft
     from .research import ResearchBrief

@@ -5,8 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-AgentRole = Literal["ideation", "research", "creation", "review", "publishing"]
-AGENT_ROLES = ("ideation", "research", "creation", "review", "publishing")
+from ..models.base import AGENT_ROLES, AgentRole
 
 
 class SkillSource(BaseModel):

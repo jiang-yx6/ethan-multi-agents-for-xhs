@@ -19,6 +19,9 @@ from ..models import (
     ContentRequest, Draft, IdeaCandidate, PublishResult, ResearchBrief,
     ResearchRequest, ReviewReport, TrendItem, UserProfile,
 )
+from ..models.collaboration import DelegationResult, DelegationTask, SupervisorContext, SupervisorDecision
+
+SKILL_READ_TOOLS = ("load_skill", "read_skill_resource")
 
 
 class SkillEnabledAgent:
@@ -26,6 +29,15 @@ class SkillEnabledAgent:
 
     def bind_skills(self, skills: AgentSkills) -> None:
         self._skills = skills
+
+    def bind_tools(self, tool_names: tuple[str, ...]) -> None:
+        if not set(tool_names).issubset(SKILL_READ_TOOLS):
+            raise ValueError("当前运行时仅支持技能读取工具")
+        self._allowed_tools = tuple(tool_names)
+
+    @property
+    def allowed_tools(self) -> tuple[str, ...]:
+        return getattr(self, "_allowed_tools", SKILL_READ_TOOLS)
 
     @property
     def skills(self) -> AgentSkills:
@@ -35,6 +47,20 @@ class SkillEnabledAgent:
 
     def skill_prompt(self) -> str:
         return self.skills.catalog_prompt()
+
+
+@runtime_checkable
+class SupervisorAgent(Protocol):
+    """理解目标、拆分与委派任务、检查结果，并决定继续、提问或结束。"""
+
+    def decide(self, context: SupervisorContext) -> SupervisorDecision: ...
+
+
+@runtime_checkable
+class DelegatedAgent(Protocol):
+    """后续专业 Agent 的统一执行入口；当前业务接口在迁移期间继续保留。"""
+
+    def run(self, task: DelegationTask) -> DelegationResult: ...
 
 
 @runtime_checkable

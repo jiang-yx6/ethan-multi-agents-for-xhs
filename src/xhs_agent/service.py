@@ -10,12 +10,13 @@ from pathlib import Path
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from .agents.base import CreationAgent, IdeationAgent, Publisher, ResearchAgent, ReviewAgent, SkillEnabledAgent
+from .agents.base import CreationAgent, IdeationAgent, Publisher, ResearchAgent, ReviewAgent
 from .agents.creation import MockCreationAgent
 from .agents.ideation import LLMIdeationAgent, MockIdeationAgent
 from .agents.publishing import MockPublisher
 from .agents.research import MockResearchAgent
 from .agents.review import RuleReviewAgent
+from .agents.registry import build_agent_registry
 from .artifacts import archive_task
 from .config import WorkflowConfig
 from .graph import compile_graph
@@ -61,16 +62,14 @@ class TaskService:
         self.trend_provider = trend_provider or EmptyTrendProvider()
         self._connector_factory = connector_factory
         self._platform_store: PlatformStore | None = None
-        assigned = set()
-        for role, agent in (("ideation", self.ideation_agent), ("research", self.research_agent),
-                            ("creation", self.creation_agent), ("review", self.review_agent),
-                            ("publishing", self.publisher)):
-            if isinstance(agent, SkillEnabledAgent):
-                if id(agent) in assigned:
-                    self.store.close()
-                    raise ValueError("不同角色必须使用独立 Agent 实例，避免技能访问范围互相覆盖")
-                assigned.add(id(agent))
-                agent.bind_skills(self.skill_library.for_agent(role))
+        try:
+            self.agent_registry = build_agent_registry(self.skill_library, {
+                "ideation": self.ideation_agent, "research": self.research_agent,
+                "creation": self.creation_agent, "review": self.review_agent, "publishing": self.publisher,
+            })
+        except Exception:
+            self.store.close()
+            raise
 
     @contextmanager
     def _open_graph(self, task_id: str):
@@ -258,7 +257,8 @@ class TaskService:
         if target is None:
             return self.publisher
         publisher = PlatformPublisher(self.platform_publishing, AccountRef.model_validate(target))
-        publisher.bind_skills(self.skill_library.for_agent("publishing"))
+        publisher.bind_skills(self.agent_registry.skills_for("publishing"))
+        publisher.bind_tools(self.agent_registry.tools_for("publishing"))
         return publisher
 
     def confirm_published(self, task_id: str, note_url: str) -> TaskView:

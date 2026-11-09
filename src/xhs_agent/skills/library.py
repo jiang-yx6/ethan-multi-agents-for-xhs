@@ -141,10 +141,10 @@ class SkillLibrary:
         finally:
             path.unlink()
 
-    def for_agent(self, role: AgentRole) -> AgentSkills:
+    def for_agent(self, role: AgentRole, *, skill_ids: tuple[str, ...] | None = None) -> AgentSkills:
         if role not in AGENT_ROLES:
             raise ValueError(f"未知 Agent 角色：{role}")
-        return AgentSkills(self, role)
+        return AgentSkills(self, role, skill_ids)
 
     def grant(self, role: AgentRole, skill_id: str) -> None:
         self.for_agent(role)
@@ -248,10 +248,13 @@ class AgentSkills:
 
     _library: SkillLibrary
     role: AgentRole
+    _skill_ids: tuple[str, ...] | None = None
 
     def _definitions(self) -> list[SkillDefinition]:
         registry = self._library._read_registry()
         allowed = set(registry.agents.get(self.role, []))
+        if self._skill_ids is not None:
+            allowed.intersection_update(self._skill_ids)
         return [skill for skill in registry.skills if skill.enabled and skill.id in allowed]
 
     def _definition(self, skill_id: str) -> SkillDefinition:

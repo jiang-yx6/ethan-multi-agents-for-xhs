@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ..llm import ChatMessage, ChatRequest, LLMProvider, LLMResponseError, ToolDefinition
 from ..skills import AgentSkills
+from .base import SKILL_READ_TOOLS
 
 
 class _LoadSkillArgs(BaseModel):
@@ -43,7 +44,10 @@ class SkillModelRuntime:
         self.max_output_retries = max_output_retries
 
     def run(self, *, skills: AgentSkills, system_prompt: str, payload: dict,
-            validate_output: Callable[[str], Any], on_event: Callable[[dict], None] | None = None):
+            validate_output: Callable[[str], Any], on_event: Callable[[dict], None] | None = None,
+            allowed_tools: tuple[str, ...] = SKILL_READ_TOOLS):
+        if not set(allowed_tools).issubset(SKILL_READ_TOOLS):
+            raise ValueError("当前运行时未实现所配置的工具")
         def emit(event: dict) -> None:
             if on_event is not None:
                 on_event(event)
@@ -53,12 +57,14 @@ class SkillModelRuntime:
             ToolDefinition(name="read_skill_resource", description="读取当前角色已授权技能内的参考资料或显式共享资源",
                            input_schema=_ReadResourceArgs.model_json_schema()),
         ]
+        tools = [tool for tool in tools if tool.name in allowed_tools]
 
         def model(state: _ModelState) -> dict:
             if state["model_calls"] >= self.max_model_calls:
                 raise LLMResponseError("模型调用已达上限，请检查输出要求或工具调用情况")
             emit({"kind": "model_call", "message": "正在生成候选方向", "call": state["model_calls"] + 1})
-            response = self.provider.chat(ChatRequest(messages=state["messages"], tools=tools, tool_choice="auto"))
+            response = self.provider.chat(ChatRequest(messages=state["messages"], tools=tools,
+                                                       tool_choice="auto" if tools else "none"))
             message = response.message
             if message.role != "assistant":
                 raise LLMResponseError("模型接口未返回 assistant 消息")
@@ -83,6 +89,8 @@ class SkillModelRuntime:
             for call in calls:
                 error = False
                 try:
+                    if call.name not in allowed_tools:
+                        raise PermissionError("当前 Agent 未获此工具授权")
                     if call.name == "load_skill":
                         args = _LoadSkillArgs.model_validate(call.arguments)
                         content = skills.load(args.skill_id).model_dump_json()
@@ -132,7 +140,8 @@ class SkillModelRuntime:
         graph = builder.compile()
         final = graph.invoke({
             "messages": [ChatMessage(role="system", content=system_prompt + "\n" + skills.catalog_prompt()
-                                     + "\n调用时使用工具实际名称：load_skill(skill_id) 和 read_skill_resource(skill_id, relative)。"),
+                                     + "\n当前授权工具：" + ", ".join(allowed_tools)
+                                     + "。只能调用本次请求提供的工具。"),
                          ChatMessage(role="user", content=json.dumps(payload, ensure_ascii=False))],
             "model_calls": 0, "tool_calls": 0, "output_retries": 0,
         }, {"recursion_limit": self.max_model_calls * 3 + 6})

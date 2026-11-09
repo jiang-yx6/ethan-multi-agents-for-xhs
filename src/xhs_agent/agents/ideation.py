@@ -66,7 +66,7 @@ class LLMIdeationAgent(SkillEnabledAgent):
         )
         runtime = SkillModelRuntime(self._get_provider(), **self._runtime_options)
         return runtime.run(skills=skills, system_prompt=prompt, validate_output=validate,
-                           on_event=self._on_event, payload={
+                           on_event=self._on_event, allowed_tools=self.allowed_tools, payload={
             "request": request.model_dump(mode="json"), "profile": profile.model_dump(mode="json"),
             "trends": [trend.model_dump(mode="json") for trend in available_trends],
         })

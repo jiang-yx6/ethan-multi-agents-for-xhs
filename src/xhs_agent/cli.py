@@ -7,6 +7,7 @@ import os
 import sys
 from pathlib import Path
 
+from .config import WorkflowConfig, load_ideation_llm
 from .models import ContentRequest, DraftContent, TaskView, TrendItem, UserProfile
 from .platforms import AccountRef, AccountService, PlatformStore, create_platform_connector
 from .profiles import load_profile
@@ -67,11 +68,19 @@ def _print_task(t: TaskView) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="xhs", description="需求、画像与热点驱动的小红书内容生产系统（默认 Mock）")
+    parser = argparse.ArgumentParser(prog="xhs", description="需求、画像与热点驱动的内容生产系统（选题使用真实模型，其余阶段暂为 Mock/规则实现）")
     parser.add_argument("--data-dir", default=None, help="数据目录（默认 $XHS_DATA_DIR 或 ./data）")
     parser.add_argument("--skills-dir", default=os.environ.get("XHS_SKILLS_DIR", str(DEFAULT_SKILLS_DIR)),
                         help="技能库目录（默认项目 skills，可用 XHS_SKILLS_DIR 覆盖）")
+    model_options = parser.add_mutually_exclusive_group()
+    model_options.add_argument("--llm-config", default=os.environ.get("XHS_LLM_CONFIG"),
+                               help="按角色配置的 JSON 文件，仅使用其中 ideation 配置；默认读取 XHS_LLM_* 环境变量")
+    model_options.add_argument("--mock-ideation", action="store_true", help="显式使用离线 Mock 选题，不调用模型")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("web", help="启动本地 Web 创作工作台")
+    p.add_argument("--host", choices=["127.0.0.1", "localhost"], default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8000)
 
     p = sub.add_parser("create", help="创建任务：结合需求、画像与可选热点生成候选选题")
     p.add_argument("domain", help="主题或创作需求，如「周末出游」")
@@ -226,7 +235,20 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "accounts":
             return _run_accounts(args, data_dir)
-        svc = TaskService(data_dir, skill_library=SkillLibrary(args.skills_dir))
+        config = WorkflowConfig(
+            ideation_backend="mock" if args.mock_ideation else "llm",
+            ideation_llm=load_ideation_llm(args.llm_config) if args.llm_config and not args.mock_ideation else None,
+        )
+        if args.command == "web":
+            try:
+                import uvicorn
+                from .web import create_app
+            except ImportError:
+                raise RuntimeError("请先安装 Web 依赖：uv sync --extra web --extra browser") from None
+            uvicorn.run(create_app(data_dir, config=config, skill_library=SkillLibrary(args.skills_dir)),
+                        host=args.host, port=args.port, workers=1)
+            return 0
+        svc = TaskService(data_dir, skill_library=SkillLibrary(args.skills_dir), config=config)
         if args.command == "create":
             profile = load_profile(args.profile) if args.profile else UserProfile()
             trends = [TrendItem.model_validate(t) for t in json.loads(
@@ -286,6 +308,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"已导出（不代表已发布）：{svc.export(args.task_id)}")
     except (KeyError, ValueError, OSError, RuntimeError) as exc:
         print(f"错误：{exc}", file=sys.stderr)
+        for note in getattr(exc, "__notes__", []):
+            if note.startswith("任务 ID："):
+                print(note, file=sys.stderr)
         return 1
     finally:
         if svc is not None:

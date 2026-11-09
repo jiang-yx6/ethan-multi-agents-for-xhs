@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -79,3 +79,24 @@ class TaskView(BaseModel):
     review: ReviewReport | None = None
     last_error: str | None = None
     publish_result: PublishResult | None = None
+
+
+class WorkflowInterrupt(BaseModel):
+    """可供客户端展示并精确恢复的人工暂停。"""
+
+    id: str
+    node: str
+    kind: str
+    value: dict[str, Any] = Field(default_factory=dict)
+    actions: list[str] = Field(default_factory=list)
+
+
+class WorkflowView(BaseModel):
+    """检查点的公开视图，不包含完整图状态、提示词或模型消息。"""
+
+    thread_id: str
+    checkpoint_id: str | None = None
+    status: Literal["not_started", "ready", "waiting_input", "failed", "completed", "inconsistent", "queued", "running"]
+    next_nodes: list[str] = Field(default_factory=list)
+    interrupts: list[WorkflowInterrupt] = Field(default_factory=list)
+    error: str | None = None

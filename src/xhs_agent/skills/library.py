@@ -19,6 +19,11 @@ DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills"
 MAX_TEXT_BYTES = 256 * 1024
 
 
+def _skill_digest(path: Path) -> str:
+    # Git checkout 可能转换 CRLF/LF；摘要校验内容，统一使用 LF 计算。
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
 def _unsafe_relative(value: str) -> bool:
     # 同时识别 Unix 绝对路径、Windows 根相对路径、盘符路径和两种分隔符。
     return bool(Path(value).anchor or PureWindowsPath(value).anchor
@@ -205,7 +210,7 @@ class SkillLibrary:
         definition = SkillDefinition(
             id=identifier, name=name, description=description, path=relative,
             source=source, required_tools=required_tools or [],
-            sha256=hashlib.sha256((directory / "SKILL.md").read_bytes()).hexdigest(),
+            sha256=_skill_digest(directory / "SKILL.md"),
         )
         with self._edit() as registry:
             if target.exists() or any(skill.id == definition.id for skill in registry.skills):
@@ -222,7 +227,7 @@ class SkillLibrary:
                     ".git", "__pycache__", "*.pyc", ".venv", "node_modules"))
                 if license_path is not None:
                     shutil.copy2(license_path, staged / "LICENSE")
-                if hashlib.sha256((staged / "SKILL.md").read_bytes()).hexdigest() != definition.sha256:
+                if _skill_digest(staged / "SKILL.md") != definition.sha256:
                     raise ValueError("导入期间技能源发生变化，请重试")
                 staged.rename(target)
                 try:
@@ -273,7 +278,8 @@ class AgentSkills:
     def load(self, skill_id: str) -> LoadedSkill:
         skill = self._definition(skill_id)
         path = self._library._path(f"{skill.path}/SKILL.md")
-        if hashlib.sha256(path.read_bytes()).hexdigest() != skill.sha256:
+        # 兼容此前本地导入的原始字节摘要；新登记统一使用规范化摘要。
+        if _skill_digest(path) != skill.sha256 and hashlib.sha256(path.read_bytes()).hexdigest() != skill.sha256:
             raise ValueError(f"技能正文已改变，请核对来源并更新注册信息：{skill_id}")
         directory = self._library._path(skill.path)
         resources = set(skill.resources)

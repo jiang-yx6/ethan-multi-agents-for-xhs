@@ -2,7 +2,7 @@
 
 根据**用户本次需求、账号画像和可选热点信息**生成内容，支持攻略、观点、生活记录、测评、科普等类型。用户目标优先，热点仅作为相关选题的参考。
 
-基于 Python + uv + LangGraph + Pydantic。默认内容流水线使用 **Mock Agent**：选题采用关键词匹配，创作生成结构化示例草稿，默认检索是假资料，默认发布只写本地模拟记录。已提供 OpenAI / Anthropic 协议的 LLM Provider 与厂商工厂，以及可选的小红书浏览器图文连接器；默认 Agent 尚未切换为模型调用，实时热点和实际图片生成尚未接入。
+基于 Python + uv + LangGraph + Pydantic。**选题默认使用真实模型**：通过统一 LLM Provider 调用配置的厂商，按需加载授权技能，并校验结构化选题结果。资料整理和创作仍采用 Mock，审核采用基本规则，默认发布只写本地模拟记录；小红书真实图文发布可单独启用。实时热点抓取和实际图片生成尚未接入。离线演示可显式选择 `--mock-ideation`。
 
 Mock 修改会保留上一版正文、记录并展示待落实的修改意见，不代表已完成语义改写。默认审核只检查基本结构、证据来源对应关系与占位情况，风格、事实真实性、画像禁区和是否编造经历仍需人工检查或接入语义审核模型。
 
@@ -39,7 +39,7 @@ uv run xhs skills show ideation skill-trending-topics
 uv run xhs skills list --agent review
 ```
 
-Agent 通过 `agent.skills.catalog()/load()/read_resource()` 按需读取，使用 `agent.skill_prompt()` 构建技能目录上下文。默认 Agent 已由 TaskService 绑定对应角色。技能声明不能授予额外权限，库不会自动执行第三方脚本；当前 Mock 也不会自动理解和执行技能。完整配置、导入及模型接入方式见 [技能库说明](skills/README.md)。
+Agent 通过 `agent.skills.catalog()/load()/read_resource()` 按需读取，使用 `agent.skill_prompt()` 构建技能目录上下文。默认 Agent 已由 TaskService 绑定对应角色。选题模型通过 LangGraph 的模型/工具循环调用 `load_skill`、`read_skill_resource`；其余 Mock 阶段仍使用既有逻辑。技能声明不能授予额外权限，库不会自动执行第三方脚本。完整配置、导入及模型接入方式见 [技能库说明](skills/README.md)。
 
 ## 安装与使用
 
@@ -48,7 +48,20 @@ uv sync
 uv run pytest
 uv run xhs --help
 
-# 简单输入方式仍可使用
+# 不配置密钥的离线演示
+uv run xhs --mock-ideation create "周末出游"
+```
+
+默认真实选题需要先配置模型。在 [模型配置示例](examples/llm-config.json) 中填写 `ideation.model` 的实际模型 ID，并在 PowerShell 中设置对应密钥：
+
+```powershell
+$env:DEEPSEEK_API_KEY = "填写你的密钥"
+uv run xhs --llm-config examples/llm-config.json create "周末出游"
+```
+
+也可以用 `XHS_LLM_PROVIDER`、`XHS_LLM_MODEL` 和厂商密钥环境变量配置默认选题模型，然后直接使用：
+
+```bash
 uv run xhs create "周末出游"
 
 # 结合账号画像和具体需求；这里只整理用户提供的素材
@@ -57,6 +70,8 @@ uv run xhs create "城市漫步" --goal "整理一篇周末路线攻略" --profi
 # 从文件提供热点。示例文件只演示格式，不是实时热点
 uv run xhs create "城市漫步" --profile examples/profile.json --trends examples/trends.json
 ```
+
+选题模型的配置方式、Skill 调用、输出校验和 Python 注入示例见 [真实模型选题说明](docs/model-ideation.md)。缺少模型配置时会明确失败，配置好后可通过 `retry TASK_ID` 继续；不会切换为 Mock 结果。
 
 将下面的 `TASK_ID` 替换为创建任务时返回的实际 ID：
 
@@ -168,7 +183,25 @@ finally:
 
 画像中的 `experiences` 仅保存用户明确提供的经历，表达偏好放在 `style/preferences`；创作实现应区分二者，缺少体验或事实时提出待确认项。
 
+## Web 创作工作台
+
+第一版已实现 React + TypeScript 前端和 FastAPI 后端，连接真实任务、后台作业、画像、模型设置、媒体、账号和发布回执。启动时不会导入演示数据。安装和运行：
+
+```powershell
+uv sync --extra web --extra browser
+cd web
+npm ci
+npm run build
+cd ..
+$env:XHS_BROWSER_CHANNEL = "chrome"
+uv run --extra web --extra browser xhs web
+```
+
+访问 `http://127.0.0.1:8000`。在“技能与模型”填写实际模型 ID 和 API Key 即可配置真实选题，密钥在本机加密保存，后续执行无需重启服务。也保留环境变量方式。本地离线验收可用 `xhs --data-dir data/web-e2e --mock-ideation web --port 8011`。已保存的 Web 模型设置会优先用于后续任务。完整功能、数据目录和开发方式见 [Web 使用说明](web/README.md)。
+
 ## 代码结构
+
+交互设计见 [前端设计方案](docs/web-frontend.md)，[独立原型](web/prototype/index.html) 保留用于设计参考；正式界面位于 `web/src/`，使用真实 Python API。
 
 ```text
 src/xhs_agent/
@@ -192,7 +225,8 @@ src/xhs_agent/
   cli.py              # 命令行入口
   agents/
     base.py           # Agent 与发布适配器协议
-    ideation.py       # Mock 选题
+    ideation.py       # 真实模型选题与显式 Mock 选题
+    runtime.py        # LangGraph 模型/Skill 工具循环、输出修正与调用上限
     research/         # Mock 资料整理与搜索协议
     creation.py       # Mock 创作
     review.py         # 本地规则审核

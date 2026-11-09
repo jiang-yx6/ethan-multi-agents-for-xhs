@@ -8,6 +8,19 @@ from xhs_agent.service import TaskService
 from xhs_agent.skills import SkillLibrary, SkillSource
 
 
+def test_skill_integrity_survives_git_line_ending_conversion(library, tmp_path):
+    directory = make_skill(tmp_path)
+    imported = import_demo(library, directory, agents=["ideation"])
+    path = library.root / imported.path / "SKILL.md"
+    canonical = path.read_bytes().replace(b"\r\n", b"\n")
+    for data in (canonical, canonical.replace(b"\n", b"\r\n")):
+        path.write_bytes(data)
+        assert library.for_agent("ideation").load(imported.id).instructions
+    path.write_bytes(canonical + b"changed content")
+    with pytest.raises(ValueError, match="正文已改变"):
+        library.for_agent("ideation").load(imported.id)
+
+
 @pytest.fixture
 def library(tmp_path):
     return SkillLibrary.initialize(tmp_path / "library")

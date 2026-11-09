@@ -4,6 +4,7 @@ import sqlite3
 import pytest
 
 from xhs_agent.agents.creation import MockCreationAgent
+from xhs_agent.agents.ideation import MockIdeationAgent
 from xhs_agent.agents.research.agent import MockResearchAgent
 from xhs_agent.agents.research.model import RetrievedDocument, SearchHit
 from xhs_agent.config import WorkflowConfig
@@ -19,7 +20,7 @@ def test_cli_create_review_export_and_modify(tmp_path, capsys):
 
     profile_path = tmp_path / "profile.json"
     profile_path.write_text(UserProfile(name="路线账号", style="轻松").model_dump_json(), encoding="utf-8")
-    base = ["--data-dir", str(tmp_path / "data")]
+    base = ["--data-dir", str(tmp_path / "data"), "--mock-ideation"]
     assert main([*base, "create", "城市漫步", "--goal", "分享路线", "--profile", str(profile_path),
                  "--content-type", "攻略", "--material", "路过江边", "--no-research", "--no-trends"]) == 0
     output = capsys.readouterr().out
@@ -29,7 +30,7 @@ def test_cli_create_review_export_and_modify(tmp_path, capsys):
     assert main([*base, "select", task_id, "0"]) == 0
     assert main([*base, "approve", task_id]) == 0
     assert main([*base, "export", task_id]) == 0
-    svc = TaskService(tmp_path / "data")
+    svc = TaskService(tmp_path / "data", ideation_agent=MockIdeationAgent())
     assert not svc.status(task_id).published
     svc.close()
     assert main([*base, "modify", task_id, "-c", "增加交通信息"]) == 0
@@ -50,7 +51,7 @@ class RecordingCreation(MockCreationAgent):
 
 def test_creation_receives_previous_draft_and_full_context(data_dir):
     creator = RecordingCreation()
-    svc = TaskService(data_dir, creation_agent=creator)
+    svc = TaskService(data_dir, ideation_agent=MockIdeationAgent(), creation_agent=creator)
     task = svc.create_task(ContentRequest(goal="写一篇攻略", constraints=["不写价格"]),
                            profile=UserProfile(name="测试账号"))
     first = svc.select_idea(task.task_id, 0)
@@ -73,7 +74,7 @@ def test_legacy_review_checkpoint_can_be_approved_and_published(data_dir):
         draft: dict
         version: int
 
-    svc = TaskService(data_dir)
+    svc = TaskService(data_dir, ideation_agent=MockIdeationAgent())
     svc.store.create_task("legacy-checkpoint", "旧主题")
     draft = Draft(version=1, title="旧标题", body="旧正文")
     svc.store.save_draft("legacy-checkpoint", draft)
@@ -94,7 +95,7 @@ def test_legacy_review_checkpoint_can_be_approved_and_published(data_dir):
                           "draft": draft.model_dump(mode="json"), "version": 1},
                          {"configurable": {"thread_id": "legacy-checkpoint"}})
     svc.close()
-    svc = TaskService(data_dir)
+    svc = TaskService(data_dir, ideation_agent=MockIdeationAgent())
     assert svc.approve("legacy-checkpoint").status == "approved"
     assert svc.publish("legacy-checkpoint").published
     svc.close()
@@ -104,13 +105,13 @@ def test_context_snapshot_and_version_archive_survive_restart(data_dir):
     profile = UserProfile(name="周末玩家", positioning="城市旅行", audience="上班族", style="轻松口语")
     request = ContentRequest(goal="分享周末路线", topic="城市漫步", content_type="攻略",
                              supplied_materials=["周六走过江边步道"], needs_research=False)
-    svc = TaskService(data_dir)
+    svc = TaskService(data_dir, ideation_agent=MockIdeationAgent())
     task = svc.create_task(request, profile)
     profile.style = "修改后的风格"
     request.supplied_materials.clear()
     svc.close()
 
-    svc = TaskService(data_dir)
+    svc = TaskService(data_dir, ideation_agent=MockIdeationAgent())
     task = svc.select_idea(task.task_id, 0)
     assert task.profile.style == "轻松口语"
     assert task.brief.supplied_materials == ["周六走过江边步道"]
@@ -146,7 +147,7 @@ class CountingTrends:
 
 def test_trends_are_optional_and_related(data_dir):
     provider = CountingTrends()
-    svc = TaskService(data_dir, trend_provider=provider)
+    svc = TaskService(data_dir, ideation_agent=MockIdeationAgent(), trend_provider=provider)
     task = svc.create_task(ContentRequest(goal="分享路线", topic="城市漫步"))
     ideas = svc.candidate_ideas(task.task_id)
     assert provider.calls == 1
@@ -161,7 +162,7 @@ def test_trends_are_optional_and_related(data_dir):
 
 def test_explicit_trends_do_not_call_provider(data_dir):
     provider = CountingTrends()
-    svc = TaskService(data_dir, trend_provider=provider)
+    svc = TaskService(data_dir, ideation_agent=MockIdeationAgent(), trend_provider=provider)
     task = svc.create_task("咖啡", trends=[TrendItem(title="咖啡话题", url="https://example.org/coffee")])
     assert provider.calls == 0
     assert svc.candidate_ideas(task.task_id)[0].trend_urls == ["https://example.org/coffee"]
@@ -183,7 +184,7 @@ class Search:
 
 def test_research_retains_source_text_and_can_skip_search(data_dir):
     search = Search()
-    svc = TaskService(data_dir, research_agent=MockResearchAgent(search))
+    svc = TaskService(data_dir, ideation_agent=MockIdeationAgent(), research_agent=MockResearchAgent(search))
     task = svc.create_task("路线")
     task = svc.select_idea(task.task_id, 0)
     assert task.brief.evidence[0].excerpt == "这段正文必须传给创作环节。"
@@ -212,7 +213,7 @@ class RejectReview:
 def test_automatic_revision_is_bounded_and_still_waits_for_human(data_dir, target):
     reviewer = RejectReview(target)
     search = Search()
-    svc = TaskService(data_dir, review_agent=reviewer, research_agent=MockResearchAgent(search),
+    svc = TaskService(data_dir, ideation_agent=MockIdeationAgent(), review_agent=reviewer, research_agent=MockResearchAgent(search),
                       config=WorkflowConfig(max_auto_revisions=2))
     task = svc.create_task("旅行")
     task = svc.select_idea(task.task_id, 0)
@@ -237,7 +238,7 @@ class FlakyPublisher:
 
 def test_failed_publish_is_not_success_and_can_retry_after_restart(data_dir):
     publisher = FlakyPublisher()
-    svc = TaskService(data_dir, publisher=publisher)
+    svc = TaskService(data_dir, ideation_agent=MockIdeationAgent(), publisher=publisher)
     task = svc.create_task("旅行")
     svc.select_idea(task.task_id, 0)
     svc.approve(task.task_id)
@@ -248,7 +249,7 @@ def test_failed_publish_is_not_success_and_can_retry_after_restart(data_dir):
     assert not failed.published
     assert failed.last_error
     svc.close()
-    svc = TaskService(data_dir, publisher=publisher)
+    svc = TaskService(data_dir, ideation_agent=MockIdeationAgent(), publisher=publisher)
     task = svc.retry(task.task_id)
     assert task.published
     assert task.status == "published"
@@ -271,12 +272,12 @@ class FailOnceResearch(MockResearchAgent):
 
 def test_research_failure_resumes_after_selection(data_dir):
     agent = FailOnceResearch()
-    svc = TaskService(data_dir, research_agent=agent)
+    svc = TaskService(data_dir, ideation_agent=MockIdeationAgent(), research_agent=agent)
     task = svc.create_task("早餐")
     with pytest.raises(RuntimeError):
         svc.select_idea(task.task_id, 1)
     svc.close()
-    svc = TaskService(data_dir, research_agent=agent)
+    svc = TaskService(data_dir, ideation_agent=MockIdeationAgent(), research_agent=agent)
     task = svc.retry(task.task_id)
     assert task.status == "pending_review"
     assert task.current_version == 1
@@ -285,7 +286,7 @@ def test_research_failure_resumes_after_selection(data_dir):
 
 
 def test_draft_commit_before_checkpoint_is_replayed_without_new_version(data_dir, monkeypatch):
-    svc = TaskService(data_dir)
+    svc = TaskService(data_dir, ideation_agent=MockIdeationAgent())
     save = svc.store.save_draft
     raised = False
 
@@ -331,7 +332,7 @@ def test_legacy_database_migrates_without_losing_approval(tmp_path):
 
 
 def test_draft_collision_does_not_invalidate_existing_approval(data_dir):
-    svc = TaskService(data_dir)
+    svc = TaskService(data_dir, ideation_agent=MockIdeationAgent())
     task = svc.create_task("分享")
     task = svc.select_idea(task.task_id, 0)
     svc.approve(task.task_id)

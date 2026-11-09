@@ -81,13 +81,13 @@ finally:
     service.close()
 ```
 
-真实模型实现需要将 `catalog_prompt` 加入上下文，并把 `load/read_resource` 接为受限模型工具；工具的角色由服务层绑定，不接受模型指定其他角色。当前 Mock 仍使用原有确定性逻辑，不会因为库中存在 SKILL.md 就执行其中步骤。
+`LLMIdeationAgent` 已把 `catalog_prompt` 加入模型上下文，并通过 `agents/runtime.py` 的 LangGraph 子图提供 `load_skill/read_skill_resource` 两个受限工具。模型可按需加载正文和参考资料，角色由服务层绑定，不接受模型指定其他角色。输出校验失败默认允许修正一次；工具和模型调用都有上限。接入方式见 [真实模型选题说明](../docs/model-ideation.md)。其余 Mock 阶段仍使用原有确定性逻辑。
 
 权限覆盖的是目录发现、技能加载和资源读取接口。未来若模型运行时另有全盘文件读取或任意命令能力，还需要在那个运行时限制工作目录与工具；这些 Python 接口不是操作系统沙箱。
 
 ## 来源与适配
 
-当前技能作为项目自身的技能维护；初始内容来源为 `https://github.com/ZJU-REAL/Easel`，commit 和 SKILL.md 摘要记录在 `registry.json`。上游 `EASEL-META.md` 保留，便于继续追溯该技能引用的来源。目录调整不修改技能正文。
+当前技能作为项目自身的技能维护；初始内容来源为 `https://github.com/ZJU-REAL/Easel`，commit 和 SKILL.md 摘要记录在 `registry.json`。摘要统一以 LF 换行计算，兼容 Git 的 CRLF/LF 转换；正文内容改变仍会拒绝加载。上游 `EASEL-META.md` 保留，便于继续追溯该技能引用的来源。目录调整不修改技能正文。
 
 需要额外共享文件时，在该技能的 `resources` 中登记别名到库内文件的映射。例如：
 

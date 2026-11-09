@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import os
+import re
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -23,6 +24,7 @@ HOME_URL = "https://creator.xiaohongshu.com/new/home"
 LOGIN_URL = "https://creator.xiaohongshu.com/login"
 ACCOUNT_URL = "https://creator.xiaohongshu.com/api/galaxy/user/info"
 PUBLISH_URL = "https://creator.xiaohongshu.com/publish/publish?source=official"
+BROWSER_VIEWPORT = {"width": 1440, "height": 1000}
 
 # 集中维护。自定义组件可能使用闭合 Shadow DOM，单独处理其按钮位置。
 SELECTORS = {
@@ -76,6 +78,7 @@ def browser_session(profile_dir: Path):
     with profile_lock(profile_dir), sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
             str(profile_dir), headless=False, locale="zh-CN", channel=channel or None,
+            viewport=BROWSER_VIEWPORT,
         )
         try:
             page = context.pages[0] if context.pages else context.new_page()
@@ -173,11 +176,69 @@ class XiaohongshuConnector:
     def _visible(page, selector):
         return next((el for el in page.locator(selector).all() if el.is_visible()), None)
 
+    @staticmethod
+    def _in_viewport(page, element, *, timeout_ms: int = 500) -> bool:
+        box = element.bounding_box(timeout=timeout_ms)
+        viewport = page.viewport_size
+        if not viewport:
+            viewport = page.evaluate("({width: innerWidth, height: innerHeight})")
+        return bool(box and box["width"] > 0 and box["height"] > 0
+                    and box["x"] < viewport["width"] and box["y"] < viewport["height"]
+                    and box["x"] + box["width"] > 0 and box["y"] + box["height"] > 0)
+
+    def _select_image_tab(self, page, *, timeout_ms: int = 15000) -> None:
+        try:
+            from playwright.sync_api import Error as BrowserError
+        except ImportError:
+            BrowserError = TimeoutError  # 注入离线页面进行测试时无需安装 browser extra。
+
+        deadline = time.monotonic() + timeout_ms / 1000
+        tabs = page.locator(SELECTORS["tab"]).filter(has_text=re.compile(r"^\s*上传图文\s*$"))
+        matched = 0
+
+        def budget(limit):
+            return max(1, min(limit, int((deadline - time.monotonic()) * 1000)))
+
+        while time.monotonic() < deadline:
+            if "/login" in page.url:
+                raise ValueError("发布页要求重新登录")
+            candidates = tabs.all()  # 每轮重新读取，允许页面异步挂载或替换标签。
+            matched = len(candidates)
+            for allow_scroll in (False, True):
+                for tab in candidates:
+                    if time.monotonic() >= deadline:
+                        break
+                    try:
+                        if (not tab.is_visible() or not tab.is_enabled(timeout=budget(250))
+                                or tab.get_attribute("aria-disabled", timeout=budget(250)) == "true"):
+                            continue
+                        in_viewport = self._in_viewport(page, tab, timeout_ms=budget(250))
+                        if not allow_scroll and not in_viewport:
+                            continue
+                        if allow_scroll:
+                            # 先处理屏幕内的标签，避免离屏副本拖动页面或耗尽等待时间。
+                            if in_viewport:
+                                continue
+                            tab.scroll_into_view_if_needed(timeout=budget(500))
+                            if not self._in_viewport(page, tab, timeout_ms=budget(250)):
+                                continue
+                        # trial 检查稳定性和遮挡，不强制触发 DOM 事件。
+                        tab.click(trial=True, timeout=budget(600))
+                        tab.click(timeout=budget(1200))
+                        return
+                    except BrowserError:
+                        if page.is_closed():
+                            raise ValueError("发布窗口已关闭，请重新准备发布") from None
+            if time.monotonic() < deadline:
+                page.wait_for_timeout(budget(150))
+        raise ValueError(f"无法点击“上传图文”标签：匹配到 {matched} 个标签，但仍在视口外、被遮挡或不可用。"
+                         "请检查发布窗口是否有登录验证、弹窗或布局异常，再重新准备发布")
+
     def _prepare(self, page, content: PlatformContent):
         page.goto(PUBLISH_URL, wait_until="domcontentloaded", timeout=30000)
         if "/login" in page.url:
             raise ValueError("发布页要求重新登录")
-        page.locator(SELECTORS["tab"]).filter(has_text="上传图文").first.click()
+        self._select_image_tab(page)
         for index, asset in enumerate(content.images):
             path = Path(asset.path)
             data = path.read_bytes()

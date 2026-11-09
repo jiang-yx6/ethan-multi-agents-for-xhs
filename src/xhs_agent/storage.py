@@ -228,6 +228,25 @@ class Store:
                 publish_result=PublishResult.model_validate(publish) if publish else None,
             )
 
+    def list_tasks(self, *, query: str = "", status: str = "", limit: int = 100,
+                   offset: int = 0) -> tuple[list[TaskView], int]:
+        conditions, args = [], []
+        if query:
+            conditions.append("(topic LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM drafts d WHERE "
+                              "d.task_id=tasks.task_id AND d.version=tasks.current_version AND d.title LIKE ? ESCAPE '\\'))")
+            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            args.extend(["%" + escaped + "%", "%" + escaped + "%"])
+        if status:
+            conditions.append("status = ?")
+            args.append(status)
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        with self._lock:
+            total = self._conn.execute("SELECT COUNT(*) FROM tasks" + where, args).fetchone()[0]
+            rows = self._conn.execute("SELECT task_id FROM tasks" + where +
+                                      " ORDER BY updated_at DESC, task_id DESC LIMIT ? OFFSET ?",
+                                      [*args, limit, offset]).fetchall()
+            return [self.get_task(row[0]) for row in rows], total
+
     @staticmethod
     def _draft_from_row(row: sqlite3.Row) -> Draft:
         data = json.loads(row["payload"]) if row["payload"] else {

@@ -1,7 +1,7 @@
 """Agent 与平台工具接口及 Mock 实现。"""
 from .base import CreationAgent, IdeationAgent, Publisher, ResearchAgent, ReviewAgent, SkillEnabledAgent
 from .creation import MockCreationAgent
-from .ideation import MockIdeationAgent
+from .ideation import LLMIdeationAgent, MockIdeationAgent
 from .publishing import MockPublisher
 from .research import MockResearchAgent
 from .review import RuleReviewAgent
@@ -15,6 +15,7 @@ __all__ = [
     "RuleReviewAgent",
     "Publisher",
     "MockIdeationAgent",
+    "LLMIdeationAgent",
     "MockResearchAgent",
     "MockCreationAgent",
     "MockPublisher",

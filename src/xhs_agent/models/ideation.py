@@ -1,7 +1,7 @@
 """选题 Agent 的输出模型。"""
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class IdeaCandidate(BaseModel):
@@ -15,3 +15,10 @@ class IdeaCandidate(BaseModel):
     content_type: str = "分享"
     trend_urls: list[str] = Field(default_factory=list)
     required_materials: list[str] = Field(default_factory=list)
+
+
+class IdeaBatch(BaseModel):
+    """真实选题模型返回的 JSON 对象；不允许空选题集。"""
+
+    model_config = ConfigDict(extra="forbid")
+    ideas: list[IdeaCandidate] = Field(min_length=1, max_length=5)

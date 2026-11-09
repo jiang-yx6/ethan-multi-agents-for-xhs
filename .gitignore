@@ -4,3 +4,10 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 data/
+node_modules/
+web/dist/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+.credentials.key

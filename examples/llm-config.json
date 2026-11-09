@@ -1,7 +1,7 @@
 {
   "ideation": {
     "provider": "deepseek",
-    "model": "YOUR_MODEL_ID",
+    "model": "deepseek-v4-pro",
     "api_key_env": "DEEPSEEK_API_KEY",
     "timeout": 120,
     "max_tokens": 4096

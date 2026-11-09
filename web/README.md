@@ -1,0 +1,109 @@
+# 创作间 Web 第一版
+
+正式页面使用 React + TypeScript + Vite，所有任务、画像、模型配置、媒体和发布操作都通过 Python API 完成。`prototype/` 保留独立设计原型，正式源码位于 `src/`。
+
+## 安装、构建与运行
+
+在项目根目录：
+
+```powershell
+uv sync --extra web --extra browser
+cd web
+npm ci
+npm run build
+cd ..
+$env:XHS_BROWSER_CHANNEL = "chrome"
+uv run --extra web --extra browser xhs web
+```
+
+访问 `http://127.0.0.1:8000`。首版只监听本机地址，服务本身会提供构建后的前端页面和 `/api` 接口。若使用 Playwright 自带 Chromium，可不设置 `XHS_BROWSER_CHANNEL`，先安装对应浏览器。
+
+真实选题可以直接在“技能与模型 → 选题模型”配置：选择服务商、填写模型 ID，将“密钥配置方式”选为“直接填写 API Key”，粘贴密钥后保存。后续任务或重试立即使用新配置，无需重启服务。
+
+保存后密码框清空，仅展示密钥是否已保存；留空再次保存会保留原密钥，输入新值则替换，勾选“清除当前接口已保存的密钥”可删除。密钥绑定服务商、协议和实际接口地址，修改接口后不会沿用另一处的密钥。
+
+也保留环境变量与启动文件方式：
+
+```powershell
+$env:DEEPSEEK_API_KEY = "填写实际密钥"
+uv run --extra web --extra browser xhs --llm-config examples/llm-config.json web
+```
+
+先把示例中的模型 ID 换成实际可用值。Web 中保存过的模型配置优先于启动时的初始配置；后续可在“技能与模型”页面修改。旧版环境变量配置继续兼容，选择“使用服务端环境变量”后可编辑变量名称，修改环境变量后需重启服务。直接填写模式清除密钥后，不会自动回退到环境中的其他密钥。
+
+离线开发/验收使用独立数据目录：
+
+```powershell
+uv run --extra web --extra browser xhs --data-dir data/web-e2e --mock-ideation web --port 8011
+```
+
+请不要在验收用目录保存真实模型配置。该目录也有独立的 Web 设置；若曾切换过模型，请在设置页明确选择离线示例。
+
+## 已实现的操作
+
+- 创建任务、提供画像/用户素材/约束和可选热点；真实模型选题或显式 Mock 选题。
+- 候选选题选择、后台执行、SSE 进度与刷新恢复。
+- 正文、标题、标签和配图编辑；保存新版本、审核、修改意见、取消和历史查看。
+- 画像的创建和保存，新任务使用新的快照，已有任务保持原画像。
+- 选题模型配置持久化，各 Agent 的实际技能授权目录查询。
+- 图片上传、预览和服务端媒体引用。
+- 账号登记、本机浏览器登录、身份校验及作业状态。
+- 发布前检查、明确确认真实发布、展示实际回执、人工核实及文案导出。
+
+资料整理、创作和质量审核仍分别使用现有 Mock/规则实现，页面有明确标记。Mock 发布记录显示为本地模拟记录，和真实平台发布区分。视频、定时发布、自动回查及技能授权编辑尚未开放。
+
+## 数据和执行约束
+
+Web 元数据位于 `data/web.db`，与原有 `store.db`、`checkpoints.db`、`platforms.db` 分开管理；上传文件保存到 `data/media/`。启动时不会导入演示任务，也不会自动执行登录或发布。
+
+Web 密钥单独保存在 `web.db` 的凭据表中，不进入配置 JSON、作业参数或 API 响应。Windows 使用当前登录用户的 DPAPI 加密；更换系统用户或迁移电脑后可能需要重新填写。其他系统使用 Fernet 加密，主密钥位于权限为 `0600` 的 `data/.credentials.key`，备份时须同时保留该文件。设置接口禁止缓存；填写中的密钥仅保留在页面内存，保存成功后清空，不写入浏览器持久存储。
+
+每个写请求携带幂等 ID；任务写操作携带预期版本。后端对同一任务/账号的活动作业设唯一约束，旧版本返回 409。页面中的批准、发布和回执登记都由后端再次校验。
+
+后台执行器持久保存作业和事件。服务重启后，未完成作业标为中断；安全的人工暂停会恢复为待办，执行中的节点需要明确重试，不会自动重放提交。已有平台提交作业继续承担防重复提交保护。单个数据目录只允许一个 Web 服务实例持有执行锁。
+
+### 与 LangGraph 的人工暂停衔接
+
+任务详情和 `GET /api/tasks/{task_id}/workflow` 返回 `workflow`：其中包含 `thread_id`、`checkpoint_id`、`status`、`next_nodes` 和 `interrupts`。每个暂停包含实际的 `id`、节点、类型、交互摘要及可用操作。接口不会返回完整图状态或模型消息。
+
+`waiting_input` 表示图已保存检查点，正在等待用户操作。此时本次 Job 可以是 `succeeded`，后台线程已释放；下一次操作会创建新 Job，使用相同的 `task_id` 作为 LangGraph 的 `thread_id` 恢复。`completed` 表示图执行结束，实际发布是否成功仍以业务回执为准。
+
+选择选题、保存草稿、提出修改意见、批准、取消和发布请求，都必须提交当前暂停的 `interrupt_id`，并继续携带 `request_id` 和 `expected_version`。例如：
+
+```json
+{
+  "request_id": "本次操作的 UUID",
+  "expected_version": 1,
+  "interrupt_id": "任务详情中当前暂停的 id"
+}
+```
+
+HTTP 接口和后台执行器均校验暂停位置。服务层使用 `Command(resume={interrupt_id: payload})` 恢复，过期暂停返回冲突，避免旧页面将操作提交给新的人工节点。当前工作流按单个人工暂停串行推进；遇到多个暂停或未知门禁时会阻止恢复。
+
+Job 查询及 SSE 同样提供实时 `workflow` 和 `allowed_actions`；进度事件包括节点完成、等待人工和图执行结束，仅记录公开摘要。页面按钮根据检查点及业务约束共同决定，查询和刷新不会恢复图。
+
+服务重启时，若遗留作业的检查点已安全停在选题、审核或发布确认节点，且草稿版本和批准条件匹配，会直接恢复对应待办。尚未运行或停在执行节点的作业仍需手动重试。`interrupted` 是 Web 作业中断状态，与正常的 LangGraph 人工暂停分开表示。
+
+业务状态与有效人工门禁不一致时，页面提供“恢复待办状态”（`POST /api/tasks/{task_id}/reconcile`），仅对齐待办状态，不调用图执行。已提交、结果不明、已发布和已取消的任务保留现有回执边界。
+
+原型中“已提交”和“已发布”的区分已落到正式 API：结果不明时页面提供核实入口，只有登记有效人工回执或获得可信平台回执后才归档为已确认发布。
+
+## 开发与检查
+
+前后端分别启动：
+
+```powershell
+# 项目根目录
+uv run --extra web --extra browser xhs web
+# 另一个终端，在 web 目录
+npm run dev
+```
+
+Vite 默认通过 5173 提供页面，并将 `/api` 代理至 8000。前端构建包括 TypeScript 检查。后台测试及浏览器冒烟检查：
+
+```powershell
+uv run --extra web pytest
+.venv\Scripts\python.exe scripts/check_web_ui.py --url http://127.0.0.1:8011
+```
+
+浏览器检查要求显式 Mock 的独立验收服务，并会创建测试任务、更新测试画像和模型显示 ID。它不操作真实发布账号、不调用付费模型，截图写入 `data/web-review/`。Chrome 需已安装。

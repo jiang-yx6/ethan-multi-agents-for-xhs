@@ -20,7 +20,7 @@
       "resources": {
         "shared/hotlist-apis.md": "shared/hotlist-apis.md"
       },
-      "sha256": "599c0cabd66aa3347f2a719fb0565578fae3c9de7846970e98e43d95df0751d2",
+      "sha256": "af5e4fc9b2d26dedc9c7aa4b247e718f3d8710c34dc822c84a0639c426356022",
       "notes": ""
     },
     {
@@ -38,7 +38,7 @@
       "enabled": true,
       "required_tools": [],
       "resources": {},
-      "sha256": "27d6080b4e6df6d6dab96a771fe1eab9a1e9316b5a2ef0b6dbcd587e27a2f1af",
+      "sha256": "c435b001ae5879671a125a3728a402a709109de81218c0e220e42aca848e633e",
       "notes": ""
     },
     {
@@ -58,7 +58,7 @@
       "resources": {
         "../../shared/scoring-dimensions.md": "shared/scoring-dimensions.md"
       },
-      "sha256": "d48264cd9715167c47147421aee08d5318fa09f1a56a0c61d325fcf52d9a4a54",
+      "sha256": "0e1d24d42650a598842899b38cdf64b609a1a97a3435bd8398b586e1e2f82c98",
       "notes": ""
     },
     {
@@ -81,7 +81,7 @@
         "beautifulsoup4"
       ],
       "resources": {},
-      "sha256": "4ac17ef41aadfe2fd6b5af26b336277acb5d53ecd1b490601ca3a757f91d7b5a",
+      "sha256": "c5251b8ef8416ad5b4fe1d1a7ffe93a18ee0a7328bc97b56af1b7c9e0dc93be5",
       "notes": ""
     },
     {
@@ -108,7 +108,7 @@
         "../text-polisher/references/structures-to-avoid.md": "builtin/text-polisher/references/structures-to-avoid.md",
         "structures-to-avoid.md": "builtin/text-polisher/references/structures-to-avoid.md"
       },
-      "sha256": "74fb2546bc2925501a09471681ead0dadad966513c43f056c5294892248becba",
+      "sha256": "6daf1c20b2c68d6637e4e4d9a6f5eb6c5ee01a53fc3d2b9c426197d1be2661f5",
       "notes": ""
     },
     {
@@ -126,7 +126,7 @@
       "enabled": true,
       "required_tools": [],
       "resources": {},
-      "sha256": "f98771c5831a15db2569922cf4cc348a269f6408664f6d6ffba50da1ec767ec4",
+      "sha256": "1202b426093b4a59933266c408fcc0cd6ce692d8279b33f9d0f2dfa70e0168fb",
       "notes": ""
     }
   ],

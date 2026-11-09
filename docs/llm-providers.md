@@ -2,7 +2,7 @@
 
 `xhs_agent.llm` 定义统一对话接口，以两个适配器处理 OpenAI Chat Completions 和 Anthropic Messages 协议。厂商预设只提供默认地址、鉴权环境变量与参数名，模型 ID 始终显式指定。
 
-当前支持同步、非流式的文本对话和客户端工具调用消息。Provider 返回工具调用，不执行工具；技能范围和人工发布门禁仍由 Agent/任务层控制。默认内容流水线仍使用 Mock Agent，需要后续在模型 Agent 中调用 Provider。
+当前支持同步、非流式的文本对话和客户端工具调用消息。Provider 返回工具调用，不执行工具；技能范围和人工发布门禁仍由 Agent/任务层控制。默认选题已由 `LLMIdeationAgent` 调用 Provider，并通过 LangGraph 执行角色受限的 Skill 读取工具；资料整理、创作和规则审核仍按既有实现运行。
 
 ## 最小调用
 
@@ -77,7 +77,7 @@ ideation_llm = create_llm_provider(ideation_config)
 creation_llm = create_llm_provider(creation_config)
 ```
 
-JSON 配置示例见 `examples/llm-config.json`。先替换模型 ID，再用 `json.load()` 读取各角色配置并传入工厂；密钥通过 `api_key_env` 引用环境变量。
+JSON 配置示例见 `examples/llm-config.json`。先替换模型 ID，密钥通过 `api_key_env` 引用环境变量。CLI 已支持 `xhs --llm-config examples/llm-config.json create "主题"`，本次只将 `ideation` 配置接入真实模型选题，其他角色仍按原有方式运行。Python 调用也可以用 `json.load()` 读取角色配置并传入工厂。完整说明见 [真实模型选题](model-ideation.md)。
 
 ## 自定义厂商与两种鉴权方式
 

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from xhs_agent.cli import main
+from xhs_agent.agents.ideation import MockIdeationAgent
 from xhs_agent.models import DraftContent, ImageRef
 from xhs_agent.platforms import AccountIdentity, AccountRef, PublishReceipt
 from xhs_agent.platforms.content import adapt_draft
@@ -45,7 +46,7 @@ def setup(tmp_path):
     services = []
 
     def make():
-        service = TaskService(tmp_path / "data", connector_factory=lambda name: connector)
+        service = TaskService(tmp_path / "data", ideation_agent=MockIdeationAgent(), connector_factory=lambda name: connector)
         services.append(service)
         return service
 
@@ -310,24 +311,29 @@ class FakeElement:
         pass
 
     def all(self):
-        return [self] if self.selector in {SELECTORS["button"], SELECTORS["toast"]} else []
+        return [self] if self.selector in {SELECTORS["tab"], SELECTORS["button"], SELECTORS["toast"]} else []
 
     def is_visible(self):
         return True
 
-    def is_enabled(self):
+    def is_enabled(self, **kwargs):
         return True
 
-    def get_attribute(self, name):
+    def get_attribute(self, name, **kwargs):
         return None
 
-    def scroll_into_view_if_needed(self):
+    def scroll_into_view_if_needed(self, **kwargs):
         pass
+
+    def bounding_box(self, **kwargs):
+        return {"x": 80, "y": 80, "width": 100, "height": 40}
 
     def inner_text(self):
         return "发布成功"
 
-    def click(self):
+    def click(self, *, trial=False, **kwargs):
+        if trial:
+            return
         if self.selector == SELECTORS["button"]:
             self.page.clicks += 1
             if self.page.click_error:
@@ -341,6 +347,7 @@ class FakeElement:
 
 
 class FakePage:
+    viewport_size = {"width": 1440, "height": 1000}
     def __init__(self):
         self.url = ""
         self.clicks = 0

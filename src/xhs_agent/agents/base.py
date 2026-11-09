@@ -7,7 +7,7 @@
 - 真实 LLM 研究 Agent：实现 :class:`ResearchAgent`。
 - 真实 LLM 创作 Agent：实现 :class:`CreationAgent`。
 - 质量审核：实现 :class:`ReviewAgent`。
-- 平台发布适配器：实现 :class:`Publisher`（本版仅提供 Mock）。
+- 平台发布适配器：实现 :class:`Publisher`，已提供 Mock 与小红书连接层实现。
 """
 from __future__ import annotations
 

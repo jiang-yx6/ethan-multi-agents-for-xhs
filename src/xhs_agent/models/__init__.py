@@ -1,5 +1,5 @@
 """按 Agent 职责组织模型，并通过包入口统一导出。"""
-from .base import ContentRequest, TaskView, TrendItem, UserProfile, utcnow
+from .base import ContentRequest, TaskView, TrendItem, UserProfile, WorkflowInterrupt, WorkflowView, utcnow
 from .creation import Draft, DraftContent, ImageRef
 from .ideation import IdeaCandidate
 from .publishing import PublishResult
@@ -34,4 +34,6 @@ __all__ = [
     "ReviewIssue",
     "ReviewReport",
     "TaskView",
+    "WorkflowInterrupt",
+    "WorkflowView",
 ]

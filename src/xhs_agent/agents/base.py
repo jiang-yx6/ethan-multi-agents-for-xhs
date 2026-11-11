@@ -1,19 +1,10 @@
-"""可替换接口（Protocol）。
-
-未来接入真实模型 / 真实平台工具时，只需实现这些协议并在
-``TaskService`` 构造时注入即可，无需改动编排逻辑：
-
-- 真实 LLM 选题 Agent：实现 :class:`IdeationAgent`。
-- 真实 LLM 研究 Agent：实现 :class:`ResearchAgent`。
-- 真实 LLM 创作 Agent：实现 :class:`CreationAgent`。
-- 质量审核：实现 :class:`ReviewAgent`。
-- 平台发布适配器：实现 :class:`Publisher`，已提供 Mock 与小红书连接层实现。
-"""
+"""父子 Agent 协作接口、专业能力接口与角色受限技能绑定。"""
 from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
 from ..skills import AgentSkills
+from ..execution import ROLE_TOOLS, SKILL_TOOLS
 
 from ..models import (
     ContentRequest, Draft, IdeaCandidate, PublishResult, ResearchBrief,
@@ -21,7 +12,7 @@ from ..models import (
 )
 from ..models.collaboration import DelegationResult, DelegationTask, SupervisorContext, SupervisorDecision
 
-SKILL_READ_TOOLS = ("load_skill", "read_skill_resource")
+SKILL_READ_TOOLS = SKILL_TOOLS
 
 
 class SkillEnabledAgent:
@@ -31,13 +22,13 @@ class SkillEnabledAgent:
         self._skills = skills
 
     def bind_tools(self, tool_names: tuple[str, ...]) -> None:
-        if not set(tool_names).issubset(SKILL_READ_TOOLS):
-            raise ValueError("当前运行时仅支持技能读取工具")
+        if not set(tool_names).issubset(ROLE_TOOLS[self.skills.role]):
+            raise ValueError("工具不属于当前角色已实现的能力范围")
         self._allowed_tools = tuple(tool_names)
 
     @property
     def allowed_tools(self) -> tuple[str, ...]:
-        return getattr(self, "_allowed_tools", SKILL_READ_TOOLS)
+        return getattr(self, "_allowed_tools", getattr(self, "available_tools", SKILL_READ_TOOLS))
 
     @property
     def skills(self) -> AgentSkills:
@@ -58,7 +49,7 @@ class SupervisorAgent(Protocol):
 
 @runtime_checkable
 class DelegatedAgent(Protocol):
-    """后续专业 Agent 的统一执行入口；当前业务接口在迁移期间继续保留。"""
+    """专业 Agent 的统一执行入口；原业务接口通过 SpecialistDelegate 适配。"""
 
     def run(self, task: DelegationTask) -> DelegationResult: ...
 

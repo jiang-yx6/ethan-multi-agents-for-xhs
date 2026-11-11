@@ -35,7 +35,7 @@ class JobRunner:
                     task = service.store.get_task(job["task_id"])
                     if task and service.reconcile_task(task.task_id):
                         self.repo.event(job["job_id"], {"kind": "reconciled", "message": "已从检查点恢复人工待办，未自动执行原操作"})
-                    elif task and task.status not in TERMINAL:
+                    elif task and task.workflow_version == 2 and task.status not in TERMINAL:
                         service.store.mark_failed(task.task_id, "Web 服务中断，请手动重试恢复检查点")
                 self.repo.event(job["job_id"], {"kind": "interrupted", "message": "服务中断，未自动重新执行"})
         finally:
@@ -72,8 +72,6 @@ class JobRunner:
             resume = {"interrupt_id": params["interrupt_id"]} if "interrupt_id" in params else {}
             if kind == "create":
                 result = service.start_task(task_id)
-            elif kind == "select":
-                result = service.select_idea(task_id, params["index"], **resume)
             elif kind == "draft":
                 data = DraftAction.model_validate(params)
                 current = service.status(task_id)
@@ -90,6 +88,10 @@ class JobRunner:
                     tags=data.tags, images=images, content_type=data.content_type), **resume)
             elif kind == "changes":
                 result = service.request_changes(task_id, params["comment"], **resume)
+            elif kind == "answer":
+                result = service.answer(task_id, params["answer"], **resume)
+            elif kind == "message":
+                result = service.message(task_id, params["text"], **resume)
             elif kind == "publish":
                 ref = AccountRef.model_validate(params["account"])
                 result = service.publish(task_id, platform=ref.platform, account_id=ref.account_id, **resume)

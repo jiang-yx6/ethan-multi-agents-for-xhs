@@ -77,7 +77,7 @@ ideation_llm = create_llm_provider(ideation_config)
 creation_llm = create_llm_provider(creation_config)
 ```
 
-JSON 配置示例见 `examples/llm-config.json`。先替换模型 ID，密钥通过 `api_key_env` 引用环境变量。CLI 已支持 `xhs --llm-config examples/llm-config.json create "主题"`，本次只将 `ideation` 配置接入真实模型选题，其他角色仍按原有方式运行。Python 调用也可以用 `json.load()` 读取角色配置并传入工厂。完整说明见 [真实模型选题](model-ideation.md)。
+JSON 配置示例见 `examples/llm-config.json`。先替换模型 ID，密钥通过 `api_key_env` 引用环境变量。CLI 支持 `xhs --llm-config examples/llm-config.json create "主题"`，父 Agent 与选题独立配置，文件中存在的 research、creation、review 配置也会启用对应模型。Python 调用也可以用 `json.load()` 读取角色配置并传入工厂。Web 可为各角色选择跟随启动配置，或保存独立网页覆盖；网页支持输出上限和超时设置，详见 [模型配置来源说明](model-configuration.md)。
 
 ## 自定义厂商与两种鉴权方式
 

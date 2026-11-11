@@ -49,10 +49,21 @@ class Store:
                     task_id TEXT NOT NULL, stage TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 0,
                     payload TEXT NOT NULL, PRIMARY KEY(task_id, stage, version)
                 );
+                CREATE TABLE IF NOT EXISTS team_artifacts (
+                    task_id TEXT NOT NULL, artifact_id TEXT NOT NULL, version INTEGER NOT NULL,
+                    reference_json TEXT NOT NULL, payload TEXT NOT NULL,
+                    PRIMARY KEY(task_id, artifact_id, version)
+                );
+                CREATE TABLE IF NOT EXISTS delegations (
+                    task_id TEXT NOT NULL, delegation_id TEXT NOT NULL, task_json TEXT NOT NULL,
+                    base_version INTEGER NOT NULL, result_json TEXT,
+                    PRIMARY KEY(task_id, delegation_id)
+                );
             """)
             # 原有列与数据保留；旧草稿 payload 为空时从旧列读取。
             additions = {
-                "tasks": {"request_json": "TEXT", "profile_json": "TEXT", "last_error": "TEXT"},
+                "tasks": {"request_json": "TEXT", "profile_json": "TEXT", "last_error": "TEXT",
+                          "workflow_version": "INTEGER NOT NULL DEFAULT 1"},
                 "drafts": {"payload": "TEXT"},
             }
             with self._conn:
@@ -61,21 +72,22 @@ class Store:
                     for column, declaration in columns.items():
                         if column not in existing:
                             self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
-                self._conn.execute("PRAGMA user_version = 2")
+                self._conn.execute("PRAGMA user_version = 3")
 
     def close(self) -> None:
         self._conn.close()
 
     def create_task(self, task_id: str, topic: str,
-                    request: ContentRequest | None = None, profile: UserProfile | None = None) -> None:
+                    request: ContentRequest | None = None, profile: UserProfile | None = None,
+                    *, workflow_version: int = 2) -> None:
         now = _now()
         request = request or ContentRequest(goal=topic, topic=topic)
         profile = profile or UserProfile()
         with self._lock, self._conn:
             self._conn.execute(
                 "INSERT INTO tasks (task_id, topic, status, current_version, created_at, updated_at, "
-                "request_json, profile_json) VALUES (?, ?, 'pending', 0, ?, ?, ?, ?)",
-                (task_id, topic, now, now, request.model_dump_json(), profile.model_dump_json()),
+                "request_json, profile_json, workflow_version) VALUES (?, ?, 'pending', 0, ?, ?, ?, ?, ?)",
+                (task_id, topic, now, now, request.model_dump_json(), profile.model_dump_json(), workflow_version),
             )
 
     def update_status(self, task_id: str, status: str) -> None:
@@ -173,6 +185,10 @@ class Store:
             self._conn.execute("UPDATE tasks SET status = 'approved', updated_at = ? WHERE task_id = ?",
                                (_now(), task_id))
 
+    def revoke_approval(self, task_id: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute("UPDATE drafts SET approved=0, approved_at=NULL WHERE task_id=?", (task_id,))
+
     def record_publish(self, task_id: str, draft: Draft) -> bool:
         with self._lock, self._conn:
             if self.is_published(task_id):
@@ -212,7 +228,7 @@ class Store:
             review = self.get_stage(task_id, "quality_review", row["current_version"])
             publish = self.get_stage(task_id, "publish", row["current_version"])
             return TaskView(
-                task_id=task_id, topic=row["topic"], status=row["status"],
+                task_id=task_id, workflow_version=row["workflow_version"], topic=row["topic"], status=row["status"],
                 current_version=row["current_version"],
                 draft=self._draft_from_row(drafts[-1]) if drafts else None,
                 published=pub is not None, published_version=pub["draft_version"] if pub else None,

@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, m
 
 from ..models import ContentRequest, TrendItem, UserProfile
 from ..platforms import AccountRef
+from ..config import ModelRole
 
 
 class InputModel(BaseModel):
@@ -28,12 +29,30 @@ class ResumeAction(TaskAction):
     interrupt_id: str = Field(min_length=1, max_length=200)
 
 
-class SelectAction(ResumeAction):
-    index: int = Field(ge=0)
-
-
 class ChangeAction(ResumeAction):
     comment: str = Field(min_length=1, max_length=10000)
+
+
+class AnswerAction(ResumeAction):
+    answer: str = Field(min_length=1, max_length=10000)
+
+    @field_validator("answer")
+    @classmethod
+    def nonblank(cls, value):
+        if not value.strip():
+            raise ValueError("回复不能为空")
+        return value.strip()
+
+
+class MessageAction(ResumeAction):
+    text: str = Field(min_length=1, max_length=10000)
+
+    @field_validator("text")
+    @classmethod
+    def nonblank(cls, value):
+        if not value.strip():
+            raise ValueError("消息不能为空")
+        return value.strip()
 
 
 class ImageInput(InputModel):
@@ -86,7 +105,7 @@ class LoginAction(InputModel):
 
 
 class ModelSettings(InputModel):
-    backend: Literal["llm", "mock"] = "llm"
+    backend: Literal["llm", "mock", "rules"] = "llm"
     provider: str = Field(default="deepseek", min_length=1, max_length=100)
     model: str = Field(default="", max_length=200)
     credential_source: Literal["api_key", "environment"] = "api_key"
@@ -94,6 +113,8 @@ class ModelSettings(InputModel):
     protocol: Literal["openai", "anthropic"] | None = None
     base_url: str | None = None
     trust_env: bool = False
+    max_tokens: int = Field(default=4096, gt=0)
+    timeout: float = Field(default=120, gt=0)
 
     @model_validator(mode="before")
     @classmethod
@@ -107,7 +128,8 @@ class ModelSettings(InputModel):
         if self.backend == "llm":
             from ..llm import LLMConfig
             LLMConfig(provider=self.provider, model=self.model, api_key_env=self.api_key_env,
-                      protocol=self.protocol, base_url=self.base_url, trust_env=self.trust_env)
+                      protocol=self.protocol, base_url=self.base_url, trust_env=self.trust_env,
+                      max_tokens=self.max_tokens, timeout=self.timeout)
         return self
 
 
@@ -138,3 +160,7 @@ class ModelSettingsUpdate(ModelSettings):
         if self.api_key and self.credential_source != "api_key":
             raise ValueError("请切换到直接填写密钥方式后保存")
         return self
+
+
+class CopyModelSettings(InputModel):
+    source_role: ModelRole

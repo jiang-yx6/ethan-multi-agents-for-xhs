@@ -1,4 +1,9 @@
 {
+  "supervisor": {
+    "provider": "deepseek",
+    "model": "supervisor-model-id",
+    "api_key_env": "XHS_SUPERVISOR_API_KEY"
+  },
   "ideation": {
     "provider": "deepseek",
     "model": "deepseek-v4-pro",
@@ -9,16 +14,16 @@
   "research": {
     "provider": "qwen",
     "model": "YOUR_MODEL_ID",
-    "api_key_env": "DASHSCOPE_API_KEY"
+    "api_key_env": "XHS_RESEARCH_API_KEY"
   },
   "creation": {
     "provider": "anthropic",
     "model": "YOUR_MODEL_ID",
-    "api_key_env": "ANTHROPIC_API_KEY"
+    "api_key_env": "XHS_CREATION_API_KEY"
   },
   "review": {
     "provider": "openai",
     "model": "YOUR_MODEL_ID",
-    "api_key_env": "OPENAI_API_KEY"
+    "api_key_env": "XHS_REVIEW_API_KEY"
   }
 }

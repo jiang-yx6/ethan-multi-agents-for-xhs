@@ -9,15 +9,15 @@ class WorkflowConflictError(ValueError):
 
 
 GATES = {
-    "select_idea": ("ideating", ["select"]),
-    "review": ("pending_review", ["draft", "changes", "approve", "cancel"]),
-    "publish_gate": ("approved", ["draft", "changes", "publish", "preflight", "export", "cancel"]),
+    "ask_user": ("waiting_input", ["answer", "cancel"]),
+    "review": ("pending_review", ["draft", "changes", "message", "approve", "cancel"]),
+    "publish_gate": ("approved", ["draft", "changes", "message", "publish", "preflight", "export", "cancel"]),
 }
-TERMINAL = {"published", "submitted", "unknown", "cancelled"}
+TERMINAL = {"published", "submitted", "unknown", "cancelled", "completed"}
 STEP_MESSAGES = {
-    "ideation": "候选选题已生成", "select_idea": "已采用选题，开始后续创作",
-    "research": "资料整理已完成", "create": "草稿已生成", "replace_draft": "新版本已保存",
-    "quality_review": "规则审核已完成", "route_quality": "审核路由已更新",
+    "supervisor": "主 Agent 已决定下一步", "execute_agent": "本次委派已执行",
+    "ask_user": "用户补充信息已接收", "finish": "协作结果已交付",
+    "replace_draft": "新版本已保存",
     "mark_approved": "当前版本已批准", "publish_gate": "已确认本次发布操作",
     "publish": "发布步骤已结束，请查看实际回执", "cancelled": "创作已取消",
 }
@@ -30,10 +30,7 @@ def describe_workflow(task_id: str, snapshot) -> WorkflowView:
         for pause in task.interrupts:
             raw = pause.value if isinstance(pause.value, dict) else {}
             # 草稿及审核正文由业务 API 提供；这里仅暴露人工交互的必要信息。
-            value = {key: raw[key] for key in ("kind", "task_id", "version", "hint") if key in raw}
-            version = raw.get("version") or (raw.get("draft") or {}).get("version")
-            if version is not None:
-                value["version"] = version
+            value = {key: raw[key] for key in ("kind", "task_id", "version", "hint", "question", "missing_information") if key in raw}
             kind = raw.get("kind", task.name)
             actions = GATES.get(kind, (None, []))[1] if task.name == kind else []
             pauses.append(WorkflowInterrupt(id=pause.id, node=task.name, kind=kind,
@@ -53,8 +50,8 @@ def gate_status(task: TaskView, workflow: WorkflowView) -> str | None:
     pause = workflow.interrupts[0]
     if pause.kind not in GATES or pause.node != pause.kind:
         return None
-    if pause.kind == "select_idea":
-        return "ideating" if task.current_version == 0 else None
+    if pause.kind == "ask_user":
+        return "waiting_input"
     if not task.draft or pause.value.get("version") != task.current_version:
         return None
     if pause.kind == "publish_gate" and not task.draft.approved:
@@ -71,6 +68,8 @@ def allowed_actions(task: TaskView, workflow: WorkflowView, *, active: bool = Fa
         return ["export"]
     if task.status == "cancelled":
         return []
+    if workflow.status == "unsupported":
+        return ["export"] if task.status == "approved" and task.draft and task.draft.approved else []
     if task.status in {"failed", "submitting"}:
         return ["retry"]
     if workflow.status == "not_started" and task.status == "pending":

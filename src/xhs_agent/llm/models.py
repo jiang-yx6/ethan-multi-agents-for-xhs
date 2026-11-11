@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Literal
+import re
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -24,6 +25,7 @@ class ToolDefinition(BaseModel):
 class ChatMessage(BaseModel):
     role: Literal["system", "user", "assistant", "tool"]
     content: str = ""
+    images: list[str] = Field(default_factory=list, repr=False)
     tool_calls: list[ToolCall] = Field(default_factory=list)
     tool_call_id: str | None = None
     is_error: bool = False
@@ -34,6 +36,9 @@ class ChatMessage(BaseModel):
 
     @model_validator(mode="after")
     def validate_role_fields(self):
+        if self.images and (self.role != "user" or any(not re.fullmatch(
+                r"data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+", image) for image in self.images)):
+            raise ValueError("图片只允许 user 消息中的 PNG/JPEG/WebP base64 数据")
         if self.role == "tool" and not self.tool_call_id:
             raise ValueError("工具结果必须包含 tool_call_id")
         if self.role != "tool" and (self.tool_call_id is not None or self.is_error):

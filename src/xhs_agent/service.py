@@ -6,6 +6,7 @@ import uuid
 from contextlib import contextmanager
 from collections.abc import Callable
 from pathlib import Path
+from time import perf_counter
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
@@ -17,9 +18,18 @@ from .agents.publishing import MockPublisher
 from .agents.research import MockResearchAgent
 from .agents.review import RuleReviewAgent
 from .agents.registry import build_agent_registry
+from .agents.delegation import SpecialistDelegate
+from .agents.supervisor import LLMSupervisorAgent, MockSupervisorAgent
+from .agents.structured import LLMCreationAgent, LLMResearchAgent, LLMReviewAgent, StructuredModelAgent
+from .agents.images import OpenAIImageProvider
+from .agents.research.search import TavilySearchProvider
 from .artifacts import archive_task
-from .config import WorkflowConfig
+from .checkpoints import checkpoint_serializer
+from .config import AgentConfig
+from .conversation import conversation_messages
 from .graph import compile_graph
+from .flow_log import FlowLog, error_details
+from .team_store import TeamStore
 from .models import ContentRequest, DraftContent, IdeaCandidate, TaskView, TrendItem, UserProfile, WorkflowView
 from .platforms import AccountRef, AccountService, PlatformPublisher, PlatformPublishingService, PlatformStore, create_platform_connector
 from .platforms.content import draft_fingerprint, local_image_path
@@ -37,57 +47,102 @@ class TaskService:
                  publisher: Publisher | None = None,
                  review_agent: ReviewAgent | None = None,
                  trend_provider: TrendProvider | None = None,
-                 config: WorkflowConfig | None = None,
+                 config: AgentConfig | None = None,
                  skill_library: SkillLibrary | None = None,
                  connector_factory=create_platform_connector,
-                 on_event: Callable[[dict], None] | None = None):
+                 on_event: Callable[[dict], None] | None = None,
+                 supervisor_agent=None, delegated_agents: dict | None = None,
+                 search_provider=None, image_provider=None):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.skill_library = skill_library or SkillLibrary()
         self.checkpoint_path = self.data_dir / "checkpoints.db"
         self.store = Store(self.data_dir / "store.db")
-        self.config = config or WorkflowConfig()
+        self.config = config or AgentConfig()
+        self.flow_log = FlowLog(self.data_dir, self.config)
+        execution = self.config.execution
+        search_provider = search_provider or (TavilySearchProvider(execution.search) if execution.search else None)
+        image_provider = image_provider or (OpenAIImageProvider(execution.images, self.data_dir / "generated-images")
+                                            if execution.images else None)
         self.on_event = on_event
         self.ideation_agent = ideation_agent if ideation_agent is not None else (
             MockIdeationAgent() if self.config.ideation_backend == "mock" else LLMIdeationAgent(
                 config=self.config.ideation_llm, max_model_calls=self.config.ideation_max_model_calls,
                 max_tool_calls=self.config.ideation_max_tool_calls,
                 max_output_retries=self.config.ideation_max_output_retries,
+                execution=execution.roles.get("ideation"),
                 on_event=on_event,
             ))
-        self.research_agent = research_agent or MockResearchAgent()
-        self.creation_agent = creation_agent or MockCreationAgent()
+        self.research_agent = research_agent or (LLMResearchAgent(config=self.config.research_llm, on_event=on_event,
+                                                execution=execution.for_role("research"), search_provider=search_provider)
+                                                if self.config.research_backend == "llm" else MockResearchAgent())
+        self.creation_agent = creation_agent or (LLMCreationAgent(config=self.config.creation_llm, on_event=on_event,
+                                                execution=execution.for_role("creation"), image_provider=image_provider)
+                                                if self.config.creation_backend == "llm" else MockCreationAgent())
         self.publisher = publisher or MockPublisher(self.store)
-        self.review_agent = review_agent or RuleReviewAgent()
+        self.review_agent = review_agent or (LLMReviewAgent(config=self.config.review_llm, on_event=on_event,
+                                            execution=execution.for_role("review"))
+                                            if self.config.review_backend == "llm" else RuleReviewAgent())
         self.trend_provider = trend_provider or EmptyTrendProvider()
         self._connector_factory = connector_factory
         self._platform_store: PlatformStore | None = None
+        self.supervisor_agent = supervisor_agent if supervisor_agent is not None else (
+            MockSupervisorAgent() if self.config.supervisor_backend == "mock" else LLMSupervisorAgent(
+                config=self.config.supervisor_llm, on_event=on_event,
+            ))
         try:
+            if set(delegated_agents or {}) - {"ideation", "research", "creation", "review"}:
+                raise ValueError("只能替换已注册的专业 Agent")
+            agents = {"ideation": self.ideation_agent, "research": self.research_agent,
+                      "creation": self.creation_agent, "review": self.review_agent, "publishing": self.publisher}
+            if len({id(agent) for agent in agents.values()}) != len(agents):
+                raise ValueError("不同角色必须使用独立 Agent 实例，避免权限互相覆盖")
+            workers = {role: SpecialistDelegate(role, agent, self.store, self.trend_provider)
+                       for role, agent in agents.items() if role != "publishing"}
             self.agent_registry = build_agent_registry(self.skill_library, {
-                "ideation": self.ideation_agent, "research": self.research_agent,
-                "creation": self.creation_agent, "review": self.review_agent, "publishing": self.publisher,
-            })
+                **workers, **(delegated_agents or {}), "supervisor": self.supervisor_agent, "publishing": self.publisher,
+            }, execution=execution)
         except Exception:
             self.store.close()
             raise
 
+    def _require_agent_graph(self, task_id: str) -> None:
+        if self.status(task_id).workflow_version != 2:
+            raise WorkflowConflictError("该任务使用已移除的旧图，只能查看已有数据；请新建父子 Agent 任务")
+
     @contextmanager
     def _open_graph(self, task_id: str):
+        self._require_agent_graph(task_id)
         conn = sqlite3.connect(str(self.checkpoint_path), check_same_thread=False)
         try:
-            saver = SqliteSaver(conn)
+            saver = SqliteSaver(conn, serde=checkpoint_serializer())
             saver.setup()
-            yield compile_graph(
-                self.store, self.ideation_agent, self.research_agent, self.creation_agent,
-                self._task_publisher(task_id), saver, self.review_agent, self.trend_provider, self.config,
-            )
+            yield compile_graph(self.store, self.agent_registry, self.supervisor_agent,
+                                self._task_publisher(task_id), saver, self.config, self._emit)
         finally:
             conn.close()
 
     def _config(self, task_id: str) -> dict:
-        return {"configurable": {"thread_id": task_id}, "recursion_limit": 60}
+        return {"configurable": {"thread_id": task_id},
+                "recursion_limit": max(60, self.config.team_max_rounds * 3 + 20)}
 
     def _execute(self, task_id: str, value) -> TaskView:
+        with self.flow_log.run(task_id, uuid.uuid4().hex):
+            start = perf_counter()
+            self._emit({"kind": "execution_started", "mode": "resume" if isinstance(value, Command)
+                        else "retry" if value is None else "start", "message": "开始执行 Agent 流程"})
+            try:
+                task = self._execute_graph(task_id, value)
+            except Exception as exc:
+                self._emit({"kind": "execution_failed", **error_details(exc),
+                            "elapsed_ms": round((perf_counter() - start) * 1000), "message": "Agent 流程执行失败"})
+                raise
+            self._emit({"kind": "execution_finished", "status": task.status, "version": task.current_version,
+                        "elapsed_ms": round((perf_counter() - start) * 1000), "message": "本次 Agent 流程执行结束"})
+            return task
+
+    def _execute_graph(self, task_id: str, value) -> TaskView:
+        self._require_agent_graph(task_id)
         try:
             with self._open_graph(task_id) as graph:
                 # 只发送节点完成摘要，不把节点输出、模型消息或推理内容写入 Web 事件。
@@ -110,11 +165,14 @@ class TaskService:
         return self.status(task_id)
 
     def _emit(self, event: dict) -> None:
+        self.flow_log.write(event)
         if self.on_event:
             self.on_event(event)
 
     def workflow(self, task_id: str) -> WorkflowView:
-        self.status(task_id)
+        if self.status(task_id).workflow_version != 2:
+            return WorkflowView(thread_id=task_id, status="unsupported",
+                                error="旧图已移除，已有数据可以查看；请新建父子 Agent 任务")
         with self._open_graph(task_id) as graph:
             return describe_workflow(task_id, graph.get_state(self._config(task_id)))
 
@@ -142,6 +200,8 @@ class TaskService:
         return True
 
     def _resume(self, task_id: str, payload: dict, interrupt_id: str) -> TaskView:
+        self._emit({"kind": "user_action", "task_id": task_id, "action": payload.get("action", "answer"),
+                    "interrupt_ids": [interrupt_id], "message": "收到人工操作"})
         return self._execute(task_id, Command(resume={interrupt_id: payload}))
 
     def create_task(self, request: ContentRequest | str,
@@ -156,6 +216,11 @@ class TaskService:
         # 保留 create_task("主题") 的 Python 调用方式。
         request = ContentRequest(goal=request, topic=request) if isinstance(request, str) else request
         request = ContentRequest.model_validate(request).model_copy(deep=True)
+        for index, source in enumerate(request.input_images):
+            path = local_image_path(source)
+            if path is None or not path.is_file():
+                raise ValueError("输入图片必须是已有的本地文件")
+            request.input_images[index] = str(path)
         profile = UserProfile.model_validate(profile or UserProfile()).model_copy(deep=True)
         validated_trends = [TrendItem.model_validate(t).model_dump(mode="json") for t in trends] if trends is not None else None
         task_id = task_id or "xhs-" + uuid.uuid4().hex
@@ -168,36 +233,58 @@ class TaskService:
             return existing
         if validated_trends is not None:
             self.store.save_stage(task_id, "trends", validated_trends if request.use_trends else [])
+        self._emit({"kind": "task_registered", "task_id": task_id, "status": "pending", "message": "已登记创作任务"})
         return self.status(task_id)
 
     def start_task(self, task_id: str) -> TaskView:
-        task = self._require(task_id, "pending", "只有尚未执行的任务才能开始")
-        return self._execute(task_id, {
-            "task_id": task_id,
-            "request": task.request.model_dump(mode="json"), "profile": task.profile.model_dump(mode="json"),
-            "auto_revisions": 0,
-        })
+        self._require(task_id, "pending", "只有尚未执行的任务才能开始")
+        return self._execute(task_id, {"task_id": task_id})
 
     def candidate_ideas(self, task_id: str) -> list[IdeaCandidate]:
         self.status(task_id)
         cached = self.store.get_stage(task_id, "ideas")
-        if cached is None:
-            with self._open_graph(task_id) as graph:
-                cached = (graph.get_state(self._config(task_id)).values or {}).get("ideas", [])
-        return [IdeaCandidate.model_validate(i) for i in cached]
-
-    def select_idea(self, task_id: str, index: int, *, interrupt_id: str | None = None) -> TaskView:
-        self._require(task_id, "ideating", "只有选题中的任务才能选择想法")
-        pause = self.validate_resume(task_id, "select", interrupt_id)
-        if type(index) is not int or not 0 <= index < len(self.candidate_ideas(task_id)):
-            raise ValueError("选题序号超出范围")
-        return self._resume(task_id, {"index": index}, pause)
+        return [IdeaCandidate.model_validate(i) for i in cached or []]
 
     def status(self, task_id: str) -> TaskView:
         task = self.store.get_task(task_id)
         if task is None:
             raise KeyError(f"任务不存在：{task_id}")
         return task
+
+    def collaboration(self, task_id: str) -> dict:
+        task = self.status(task_id)
+        if task.workflow_version != 2:
+            return {"mode": "unsupported", "history": [], "artifacts": [], "error": "旧图已移除，请新建父子 Agent 任务"}
+        with self._open_graph(task_id) as graph:
+            state = graph.get_state(self._config(task_id)).values or {}
+        return {"mode": "team", "decision": state.get("decision"), "history": state.get("history", []),
+                "messages": conversation_messages(state),
+                "user_messages": state.get("user_messages", []), "summary": state.get("summary"),
+                "rounds": state.get("rounds", 0), "turn": state.get("turn", 0),
+                "artifacts": [ref.model_dump(mode="json") for ref in TeamStore(self.store).artifacts(task_id)]}
+
+    def artifact(self, task_id: str, artifact_id: str, version: int) -> dict:
+        self.status(task_id)
+        artifacts = TeamStore(self.store)
+        ref = next((ref for ref in artifacts.artifacts(task_id)
+                    if ref.artifact_id == artifact_id and ref.version == version), None)
+        if ref is None:
+            raise KeyError("当前任务没有该产物版本")
+        return {"reference": ref.model_dump(mode="json"), "content": artifacts.resolve(ref)}
+
+    def message(self, task_id: str, text: str, *, interrupt_id: str | None = None) -> TaskView:
+        self._require(task_id, ("pending_review", "approved"), "当前状态暂不能向父 Agent 发送新消息")
+        if not isinstance(text, str) or not text.strip() or len(text) > 10000:
+            raise ValueError("消息必须是 1 到 10000 字的非空文字")
+        pause = self.validate_resume(task_id, "message", interrupt_id)
+        return self._resume(task_id, {"action": "message", "text": text.strip()}, pause)
+
+    def answer(self, task_id: str, answer: str, *, interrupt_id: str | None = None) -> TaskView:
+        self._require(task_id, "waiting_input", "当前任务没有等待用户补充信息")
+        if not isinstance(answer, str) or not answer.strip() or len(answer) > 10000:
+            raise ValueError("回复必须是 1 到 10000 字的非空文字")
+        pause = self.validate_resume(task_id, "answer", interrupt_id)
+        return self._resume(task_id, {"answer": answer.strip()}, pause)
 
     def approve(self, task_id: str, *, interrupt_id: str | None = None) -> TaskView:
         task = self._require(task_id, "pending_review", "只有待审核的任务才能批准")
@@ -272,10 +359,7 @@ class TaskService:
             return self.status(task_id)
         with self._open_graph(task_id) as graph:
             has_checkpoint = bool(graph.get_state(self._config(task_id)).values)
-        value = None if has_checkpoint else {
-            "task_id": task_id, "request": task.request.model_dump(mode="json"),
-            "profile": task.profile.model_dump(mode="json"), "auto_revisions": 0,
-        }
+        value = None if has_checkpoint else {"task_id": task_id}
         return self._execute(task_id, value)
 
     def export(self, task_id: str) -> Path:
@@ -283,7 +367,7 @@ class TaskService:
         return archive_task(task, self.data_dir / "outputs")
 
     def cancel(self, task_id: str, *, interrupt_id: str | None = None) -> TaskView:
-        self._require(task_id, ("pending_review", "approved"), "当前状态不支持取消")
+        self._require(task_id, ("pending_review", "approved", "waiting_input"), "当前状态不支持取消")
         pause = self.validate_resume(task_id, "cancel", interrupt_id)
         return self._resume(task_id, {"action": "cancel"}, pause)
 
@@ -295,6 +379,11 @@ class TaskService:
         return task
 
     def close(self) -> None:
+        for agent in (self.research_agent, self.creation_agent, self.review_agent):
+            if isinstance(agent, StructuredModelAgent):
+                agent.close()
+        if isinstance(self.supervisor_agent, LLMSupervisorAgent):
+            self.supervisor_agent.close()
         if isinstance(self.ideation_agent, LLMIdeationAgent):
             self.ideation_agent.close()
         if self._platform_store is not None:

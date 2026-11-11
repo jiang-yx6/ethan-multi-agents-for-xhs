@@ -2,6 +2,8 @@
 
 `TaskService` 默认创建 `LLMIdeationAgent`，在第一次执行选题时创建 Provider。模型通过 `xhs_agent.llm` 统一接口调用，兼容现有 OpenAI Chat Completions 和 Anthropic Messages 适配器。默认资料整理、创作、规则审核和 Mock 发布保持各自的实现。
 
+运行完整任务还需要独立配置父 Agent：文件中提供 `supervisor` 对象，或设置 `XHS_SUPERVISOR_*`。选题的模型与密钥不会自动用于父 Agent，详见 [协作配置](agent-collaboration.md)。
+
 ## CLI 使用
 
 先安装依赖：
@@ -33,7 +35,7 @@ uv run xhs create "周末散步" --profile examples/profile.json --no-trends
 选择成功后继续原有流程：
 
 ```powershell
-uv run xhs select TASK_ID 0
+uv run xhs answer TASK_ID --text "采用第一个方向"
 uv run xhs status TASK_ID
 ```
 
@@ -46,7 +48,7 @@ uv run xhs --llm-config examples/llm-config.json retry TASK_ID
 模型配置或接口失败不会生成 Mock 选题。离线演示需显式选择：
 
 ```powershell
-uv run xhs --mock-ideation create "周末散步"
+uv run xhs --mock-ideation --mock-supervisor create "周末散步"
 ```
 
 ## 模型与技能的执行过程
@@ -80,11 +82,11 @@ uv run xhs --mock-ideation create "周末散步"
 ```python
 import os
 
-from xhs_agent.config import WorkflowConfig
+from xhs_agent.config import AgentConfig
 from xhs_agent.llm import LLMConfig
 from xhs_agent.service import TaskService
 
-service = TaskService(config=WorkflowConfig(
+service = TaskService(config=AgentConfig(
     ideation_llm=LLMConfig(
         provider="deepseek",
         model=os.environ["XHS_LLM_MODEL"],
@@ -117,7 +119,7 @@ with create_llm_provider() as provider:
 
 ## 调用限制和验证
 
-`WorkflowConfig` 提供：
+`AgentConfig` 提供：
 
 | 配置 | 默认 | 范围 |
 | --- | --- | --- |

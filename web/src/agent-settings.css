@@ -1,0 +1,344 @@
+.agent-role-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin: 26px 0 20px;
+}
+.agent-role-tab {
+  min-width: 0;
+  padding: 17px 18px 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  text-align: left;
+  transition:
+    background 160ms,
+    border-color 160ms;
+}
+.agent-role-tab:hover {
+  border-color: var(--green);
+}
+.agent-role-tab.active {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--surface);
+}
+.agent-tab-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 15px;
+}
+.agent-tab-top > span {
+  font-size: 9px;
+  letter-spacing: 1px;
+  opacity: 0.65;
+}
+.agent-tab-top i {
+  flex: 0 0 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--line);
+}
+.agent-tab-top i.configured {
+  background: #7caa74;
+}
+.agent-role-tab strong {
+  display: block;
+  font-family: var(--display);
+  font-size: 16px;
+  font-weight: 600;
+}
+.agent-tab-status {
+  display: block;
+  font-size: 10px;
+  margin-top: 7px;
+  opacity: 0.7;
+}
+.agent-settings-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  gap: 22px;
+  align-items: start;
+}
+.agent-model-panel {
+  min-width: 0;
+  padding: 28px;
+}
+.agent-panel-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+.agent-panel-heading .eyebrow,
+.agent-settings-aside .eyebrow {
+  font-size: 9px;
+  letter-spacing: 1.8px;
+  color: var(--muted);
+}
+.agent-panel-heading h2 {
+  margin: 10px 0 7px;
+  font-size: 23px;
+}
+.agent-panel-heading p {
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--muted);
+}
+.model-source-box {
+  margin-top: 24px;
+  padding: 18px;
+  border: 1px solid #d9dfd0;
+  border-radius: 7px;
+  background: #f8f8f1;
+}
+.model-source-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.model-source-heading label {
+  margin: 0;
+  font-weight: 600;
+  font-size: 12px;
+}
+.source-active {
+  font-size: 10px;
+  color: var(--green);
+}
+.model-source-box select {
+  width: 100%;
+}
+.model-source-box > p {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.9;
+}
+.startup-reference {
+  padding-top: 13px;
+  margin-top: 15px;
+  border-top: 1px solid var(--line);
+}
+.startup-reference > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 10px;
+}
+.startup-reference > div > span {
+  color: var(--muted);
+}
+.startup-reference code {
+  display: block;
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+  font-size: 10px;
+  color: var(--muted);
+}
+.startup-reference p {
+  margin-top: 8px;
+  font-size: 10px;
+  line-height: 1.8;
+  color: var(--muted);
+}
+.agent-connection-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.agent-connection-fields:disabled {
+  opacity: 0.72;
+}
+.model-copy-box {
+  margin: 25px 0;
+  padding: 18px;
+  border: 1px solid #dce5d5;
+  border-radius: 7px;
+  background: #f1f4ec;
+}
+.model-copy-box strong {
+  font-size: 12px;
+  color: var(--green);
+}
+.model-copy-box p {
+  margin: 5px 0 0;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.model-copy-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 9px;
+  margin-top: 13px;
+}
+.model-copy-controls select {
+  min-width: 0;
+  width: 100%;
+  text-overflow: ellipsis;
+  background: var(--surface);
+}
+.model-copy-controls .button {
+  white-space: nowrap;
+  font-size: 11px;
+  background: var(--surface);
+  border-color: #cedac8;
+}
+.agent-model-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.agent-model-fields .form-grid > div {
+  min-width: 0;
+}
+.agent-model-fields .form-grid input,
+.agent-model-fields .form-grid select {
+  max-width: 100%;
+}
+.agent-model-fields .checkbox-line {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 10px;
+}
+.agent-model-fields .checkbox-line input {
+  flex: 0 0 auto;
+  width: auto;
+}
+.agent-save-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  border-top: 1px solid var(--line);
+  padding-top: 23px;
+  margin-top: 26px;
+}
+.agent-save-bar p {
+  font-size: 10px;
+  line-height: 1.8;
+  color: var(--muted);
+  max-width: 290px;
+}
+.agent-save-bar .button {
+  white-space: nowrap;
+}
+.agent-settings-aside {
+  min-width: 0;
+  display: grid;
+  gap: 20px;
+}
+.agent-skills-panel {
+  padding: 24px;
+}
+.agent-skills-panel h2 {
+  margin: 12px 0 9px;
+  font-size: 19px;
+}
+.agent-skills-panel .skill-row {
+  align-items: start;
+}
+.agent-skills-panel .skill-row > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.agent-skills-panel .skill-icon {
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+}
+.agent-skills-panel .empty {
+  padding: 24px 0 5px;
+  text-align: left;
+  font-size: 11px;
+  line-height: 1.9;
+}
+.agent-settings-note {
+  padding: 25px;
+  border-left: 2px solid #a6b59c;
+  background: #eeeee4;
+  border-radius: 0 8px 8px 0;
+}
+.agent-settings-note h3 {
+  font: 600 19px/1.7 var(--display);
+  margin: 13px 0;
+}
+.agent-settings-note p {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 2;
+  margin-top: 12px;
+}
+@media (max-width: 1100px) {
+  .agent-settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .agent-settings-aside {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .agent-role-tab {
+    padding: 14px 12px;
+  }
+  .agent-tab-top > span {
+    font-size: 8px;
+    letter-spacing: 0.3px;
+  }
+}
+@media (max-width: 600px) {
+  .model-source-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .agent-role-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 18px;
+  }
+  .agent-role-tab:first-child {
+    grid-column: 1 / -1;
+  }
+  .agent-role-tab:first-child .agent-tab-top {
+    margin-bottom: 8px;
+  }
+  .agent-role-tab strong {
+    font-size: 15px;
+  }
+  .agent-model-panel {
+    padding: 20px 16px;
+  }
+  .agent-panel-heading h2 {
+    font-size: 21px;
+  }
+  .agent-settings-aside {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .model-copy-box {
+    padding: 14px;
+  }
+  .model-copy-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .model-copy-controls .button {
+    justify-content: center;
+  }
+  .agent-save-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+  .agent-save-bar p {
+    max-width: none;
+  }
+  .agent-save-bar .button {
+    justify-content: center;
+  }
+}

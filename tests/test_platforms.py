@@ -1,4 +1,5 @@
 """平台集成与浏览器协议均离线验证，不登录、不上传、不发帖。"""
+from xhs_agent.config import AgentConfig
 import base64
 from contextlib import contextmanager
 from pathlib import Path
@@ -46,7 +47,7 @@ def setup(tmp_path):
     services = []
 
     def make():
-        service = TaskService(tmp_path / "data", ideation_agent=MockIdeationAgent(), connector_factory=lambda name: connector)
+        service = TaskService(tmp_path / "data", ideation_agent=MockIdeationAgent(), connector_factory=lambda name: connector, config=AgentConfig(ideation_backend="mock", supervisor_backend="mock"))
         services.append(service)
         return service
 
@@ -60,7 +61,6 @@ def approved(setup):
     svc.accounts.add(REF)
     assert svc.accounts.login(REF).state == "authenticated"
     task = svc.create_task("周末路线")
-    svc.select_idea(task.task_id, 0)
     task = svc.replace_draft(task.task_id, DraftContent(
         title="周末路线", body="分享这次散步的体验。", images=[ImageRef(description="路线照片", source=str(setup.image))]))
     assert task.current_version == 2
@@ -113,7 +113,6 @@ def test_real_preflight_rejects_placeholder_and_keeps_approval(setup):
     svc.accounts.add(REF)
     svc.accounts.login(REF)
     task = svc.create_task("日常")
-    svc.select_idea(task.task_id, 0)
     svc.approve(task.task_id)
     with pytest.raises(ValueError, match="真实发布需要本地图片"):
         svc.publish(task.task_id, platform=REF.platform, account_id=REF.account_id)
@@ -272,7 +271,7 @@ def test_cli_replace_draft_uses_json_relative_images_and_needs_reapproval(setup,
     replacement = tmp_path / "note.json"
     replacement.write_text('{"title":"新的标题","body":"手动写好的正文","images":[{"description":"实拍","source":"photo.png"}]}', encoding="utf-8")
     data_dir = str(svc.data_dir)
-    assert main(["--data-dir", data_dir, "replace-draft", task.task_id, "--file", str(replacement)]) == 0
+    assert main(["--data-dir", data_dir, "--mock-ideation", "--mock-supervisor", "replace-draft", task.task_id, "--file", str(replacement)]) == 0
     updated = svc.status(task.task_id)
     assert updated.status == "pending_review"
     assert updated.draft.images[0].source == str(setup.image.resolve())

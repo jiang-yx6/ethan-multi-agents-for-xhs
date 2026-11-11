@@ -118,6 +118,71 @@ export interface TaskDetail {
   events: EventItem[];
   allowed_actions: string[];
   workflow: Workflow;
+  collaboration: Collaboration;
+}
+export interface TaskActions {
+  loading: boolean;
+  onAction: (
+    kind: string,
+    params?: Record<string, unknown>,
+    onAccepted?: () => void,
+  ) => Promise<boolean>;
+  onPublish: () => void;
+  onConfirm: () => void;
+  onSettings: () => void;
+  onDirty: (dirty: boolean) => void;
+  notify: (value: string) => void;
+}
+export interface ArtifactReference {
+  task_id: string;
+  artifact_id: string;
+  kind: "material" | "trends" | "ideas" | "idea" | "brief" | "draft" | "review";
+  version: number;
+  summary: string;
+}
+export interface ConversationMessage {
+  id: string;
+  role: "user" | "assistant";
+  kind: "delegate" | "ask_user" | "finish" | "answer" | "changes" | "message";
+  content: string;
+  reason?: string;
+  agent_id?: string;
+  delegation_id?: string;
+}
+export interface DelegationRecord {
+  task: {
+    delegation_id: string;
+    target_agent: string;
+    instruction: string;
+    acceptance_criteria: string[];
+  };
+  result: {
+    status: "completed" | "needs_input" | "failed";
+    summary: string;
+    artifacts: ArtifactReference[];
+    missing_information: string[];
+    failure_reason: string | null;
+  };
+}
+export interface Collaboration {
+  mode: "team" | "unsupported";
+  decision?: {
+    action: string;
+    reason: string;
+    question?: string;
+    summary?: string;
+    task?: {
+      delegation_id: string;
+      target_agent: string;
+      instruction: string;
+      acceptance_criteria: string[];
+    };
+  };
+  messages?: ConversationMessage[];
+  history: DelegationRecord[];
+  user_messages?: string[];
+  summary?: string | null;
+  artifacts: ArtifactReference[];
 }
 export interface Workflow {
   thread_id: string;
@@ -130,13 +195,21 @@ export interface Workflow {
     | "completed"
     | "inconsistent"
     | "queued"
-    | "running";
+    | "running"
+    | "unsupported";
   next_nodes: string[];
   interrupts: {
     id: string;
     node: string;
     kind: string;
-    value: { version?: number; hint?: string; task_id?: string; kind?: string };
+    value: {
+      version?: number;
+      hint?: string;
+      task_id?: string;
+      kind?: string;
+      question?: string;
+      missing_information?: string[];
+    };
     actions: string[];
   }[];
   error: string | null;
@@ -149,8 +222,8 @@ export interface Account {
   nickname: string;
   job: Job | null;
 }
-export interface ModelSettings {
-  backend: "llm" | "mock";
+export interface ModelConnection {
+  backend: "llm" | "mock" | "rules";
   provider: string;
   model: string;
   api_key_env: string;
@@ -161,6 +234,21 @@ export interface ModelSettings {
   trust_env: boolean;
   credential_configured?: boolean;
   model_configured?: boolean;
+  max_tokens: number;
+  timeout: number;
+}
+export interface ModelSettings extends ModelConnection {
+  config_source: "startup" | "web";
+  startup?: {
+    origin: "file" | "provided" | "environment" | "defaults";
+    path: string | null;
+    values: ModelConnection;
+  };
+}
+export type ModelRole =
+  "supervisor" | "ideation" | "research" | "creation" | "review";
+export interface AgentModelSettings extends ModelSettings {
+  role: ModelRole;
 }
 export interface ImageReference {
   description: string;
@@ -173,4 +261,6 @@ export interface Health {
   ok: boolean;
   mode: string;
   ideation_backend: string;
+  supervisor_backend?: string;
+  stages?: { research: string; creation: string; review: string };
 }

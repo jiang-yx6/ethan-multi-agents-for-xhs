@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 
 const paths: Record<string, ReactNode> = {
   workspace: (
@@ -76,12 +76,15 @@ export function Modal({
   title,
   onClose,
   children,
+  className,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
+  className?: string;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
   useEffect(() => {
     const el = ref.current!;
     el.showModal();
@@ -89,15 +92,16 @@ export function Modal({
   }, []);
   return (
     <dialog
+      className={className}
       ref={ref}
-      aria-labelledby="modal-title"
+      aria-labelledby={titleId}
       onCancel={(e) => {
         e.preventDefault();
         onClose();
       }}
     >
       <div className="modal-heading">
-        <h2 id="modal-title">{title}</h2>
+        <h2 id={titleId}>{title}</h2>
         <button className="icon-button" aria-label="关闭弹窗" onClick={onClose}>
           <Icon name="close" />
         </button>
@@ -134,19 +138,19 @@ export function Cover({ title }: { title: string }) {
     </div>
   );
 }
-export const states: Record<string, [string, string, number]> = {
-  pending: ["等待执行", "neutral", 0],
-  ideating: ["待选择方向", "warning", 0],
-  researching: ["整理资料中", "neutral", 1],
-  researched: ["准备创作", "neutral", 2],
-  pending_review: ["待你审核", "warning", 3],
-  approved: ["已批准 · 待发布", "", 4],
-  submitting: ["正在提交", "neutral", 4],
-  submitted: ["已提交 · 待核实", "warning", 4],
-  unknown: ["结果待核实", "warning", 4],
-  published: ["已确认发布", "", 5],
-  failed: ["执行失败", "danger", 0],
-  cancelled: ["已取消", "neutral", 0],
+export const states: Record<string, [string, string]> = {
+  pending: ["等待执行", "neutral"],
+  coordinating: ["父 Agent 协调中", "neutral"],
+  waiting_input: ["待补充信息", "warning"],
+  completed: ["结果已交付", ""],
+  pending_review: ["待你审核", "warning"],
+  approved: ["已批准 · 待发布", ""],
+  submitting: ["正在提交", "neutral"],
+  submitted: ["已提交 · 待核实", "warning"],
+  unknown: ["结果待核实", "warning"],
+  published: ["已确认发布", ""],
+  failed: ["执行失败", "danger"],
+  cancelled: ["已取消", "neutral"],
 };
 export function Badge({
   status,

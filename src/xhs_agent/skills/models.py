@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..models.base import AGENT_ROLES, AgentRole
+from ..models.base import AgentRole
 
 
 class SkillSource(BaseModel):

@@ -1,3 +1,4 @@
+from xhs_agent.config import AgentConfig
 import json
 from dataclasses import FrozenInstanceError
 
@@ -168,7 +169,7 @@ def test_invalid_registry_fails_closed(library):
 
 
 def test_service_binds_distinct_scopes_and_builds_metadata_only_prompts(tmp_path):
-    svc = TaskService(tmp_path / "data")
+    svc = TaskService(tmp_path / "data", config=AgentConfig())
     try:
         assert svc.ideation_agent.skills.role == "ideation"
         assert svc.research_agent.skills.role == "research"

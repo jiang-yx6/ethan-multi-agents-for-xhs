@@ -16,7 +16,7 @@ class CollaborationModel(BaseModel):
 
 
 class ArtifactReference(CollaborationModel):
-    """逻辑引用，不是任意文件路径；内容解析与持久化由后续产物服务负责。"""
+    """逻辑引用，不是任意文件路径；内容解析与持久化由 TeamStore 负责。"""
 
     task_id: Text
     artifact_id: Text
@@ -62,10 +62,14 @@ class DelegationTask(CollaborationModel):
     input_artifacts: tuple[ArtifactReference, ...] = ()
     materials: tuple[Text, ...] = ()
     acceptance_criteria: tuple[Text, ...] = Field(min_length=1)
+    idea_index: Annotated[StrictInt, Field(ge=0)] | None = None
 
     @model_validator(mode="after")
     def check_inputs(self):
         _check_artifacts(self.task_id, self.input_artifacts)
+        kinds = [ref.kind for ref in self.input_artifacts]
+        if len(kinds) != len(set(kinds)):
+            raise ValueError("同次委派每类输入产物只能提供一个；多个素材请合并为 material 或 materials")
         return self
 
 
@@ -98,6 +102,7 @@ class DelegationResult(CollaborationModel):
 class DelegationRecord(CollaborationModel):
     task: DelegationTask
     result: DelegationResult
+    user_message_count: Annotated[StrictInt, Field(ge=0)] = 0
 
     @model_validator(mode="after")
     def check_pair(self):
@@ -115,6 +120,7 @@ class SupervisorContext(CollaborationModel):
     artifacts: tuple[ArtifactReference, ...] = ()
     history: tuple[DelegationRecord, ...] = ()
     user_messages: tuple[Text, ...] = ()
+    remaining_rounds: int = Field(default=20, ge=0)
 
     @model_validator(mode="after")
     def check_context(self):

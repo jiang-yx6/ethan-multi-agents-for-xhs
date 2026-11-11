@@ -7,8 +7,9 @@ from collections.abc import Callable
 from ..llm import LLMConfig, LLMConfigurationError, LLMProvider, create_llm_provider
 from ..models import ContentRequest, IdeaCandidate, TrendItem, UserProfile
 from ..models.ideation import IdeaBatch
+from ..execution import RoleExecution
 from .base import SkillEnabledAgent
-from .runtime import SkillModelRuntime
+from .runtime import ModelToolRuntime
 
 
 class LLMIdeationAgent(SkillEnabledAgent):
@@ -16,7 +17,7 @@ class LLMIdeationAgent(SkillEnabledAgent):
 
     def __init__(self, provider: LLMProvider | None = None, *, config: LLMConfig | None = None,
                  max_model_calls: int = 6, max_tool_calls: int = 12, max_output_retries: int = 1,
-                 on_event: Callable[[dict], None] | None = None):
+                 on_event: Callable[[dict], None] | None = None, execution: RoleExecution | None = None):
         if provider is not None and config is not None:
             raise ValueError("provider 与 config 只能指定一个")
         self._provider = provider
@@ -25,6 +26,9 @@ class LLMIdeationAgent(SkillEnabledAgent):
         self._on_event = on_event
         self._runtime_options = dict(max_model_calls=max_model_calls, max_tool_calls=max_tool_calls,
                                      max_output_retries=max_output_retries)
+        if execution:
+            self._runtime_options = execution.runtime_options()
+        self._prompt = execution.prompt if execution else ""
 
     def _get_provider(self) -> LLMProvider:
         if self._provider is None:
@@ -55,6 +59,7 @@ class LLMIdeationAgent(SkillEnabledAgent):
             return batch.ideas
 
         prompt = (
+            self._prompt + "\n"
             "你是小红书选题 Agent。根据本次需求、账号画像和可选热点，建议 3 个有差异的具体选题，"
             "允许返回 1 到 5 个。用户目标和约束优先，热点只有相关时才使用；内容形式遵循用户需求。"
             "禁止编造用户经历、实时热度、事实来源、已经执行的联网或其他工具操作。"
@@ -64,7 +69,7 @@ class LLMIdeationAgent(SkillEnabledAgent):
             "最终只输出 JSON 对象，不要 Markdown 或解释文字，严格遵守以下 schema：\n"
             + json.dumps(IdeaBatch.model_json_schema(), ensure_ascii=False)
         )
-        runtime = SkillModelRuntime(self._get_provider(), **self._runtime_options)
+        runtime = ModelToolRuntime(self._get_provider(), **self._runtime_options)
         return runtime.run(skills=skills, system_prompt=prompt, validate_output=validate,
                            on_event=self._on_event, allowed_tools=self.allowed_tools, payload={
             "request": request.model_dump(mode="json"), "profile": profile.model_dump(mode="json"),

@@ -9,12 +9,13 @@ from ..models.collaboration import (
     FinishDecision, SupervisorContext, SupervisorDecision,
 )
 from ..skills import AgentSkills, SkillLibrary
+from ..execution import ExecutionConfig, ROLE_TOOLS
 from .base import SKILL_READ_TOOLS, SkillEnabledAgent
 from .supervisor import SUPERVISOR_DECISION_ADAPTER, SUPERVISOR_RESPONSIBILITIES
 
 
 class AgentRegistry:
-    """注册定义可独立于实现存在；本阶段不负责执行、存储或调度 Agent。"""
+    """注册定义可独立于实现存在；负责目录、实例绑定与权限校验。"""
 
     def __init__(self, skill_library: SkillLibrary):
         self._library = skill_library
@@ -30,8 +31,8 @@ class AgentRegistry:
         granted = {skill.id for skill in self._library.for_agent(identifier).catalog()}
         if not set(definition.skill_ids).issubset(granted):
             raise PermissionError("Agent 注册不能扩大技能库的角色授权")
-        if not set(definition.tool_names).issubset(SKILL_READ_TOOLS):
-            raise ValueError("注册表只能授权当前已实现的技能读取工具")
+        if not set(definition.tool_names).issubset(ROLE_TOOLS[identifier]):
+            raise ValueError("注册表只能授权该角色当前已实现的工具")
         if isinstance(agent, SkillEnabledAgent):
             agent.bind_skills(self._library.for_agent(identifier, skill_ids=definition.skill_ids))
             agent.bind_tools(definition.tool_names)
@@ -50,7 +51,7 @@ class AgentRegistry:
                      if item.enabled and (item.delegatable or not delegatable_only))
 
     def agent(self, agent_id: str) -> object:
-        """取得应用注入的实现；旧角色接口尚不等同于 DelegatedAgent.run。"""
+        """取得应用注入的实现；团队模式的专业角色绑定统一 run 适配器。"""
         self.definition(agent_id)
         if agent_id not in self._agents:
             raise RuntimeError(f"Agent 尚未绑定执行实现：{agent_id}")
@@ -69,9 +70,11 @@ class AgentRegistry:
             raise PermissionError("目标 Agent 不允许被委派")
         return definition
 
-    def validate_result(self, task: DelegationTask, result: DelegationResult) -> None:
+    def validate_result(self, task: DelegationTask, result: DelegationResult) -> DelegationResult:
         self.validate_delegation(task)
+        result = DelegationResult.model_validate(result)
         result.validate_for(task)
+        return result
 
     def validate_decision(self, value: str | dict | SupervisorDecision,
                           context: SupervisorContext) -> SupervisorDecision:
@@ -87,6 +90,12 @@ class AgentRegistry:
                 raise ValueError("委派必须属于当前任务")
             if task.delegation_id in {record.task.delegation_id for record in context.history}:
                 raise ValueError("新的决策不能重复使用已完成的委派 ID")
+            if context.history:
+                previous = context.history[-1]
+                if (previous.result.status != "completed"
+                        and len(context.user_messages) <= previous.user_message_count
+                        and task.model_dump(exclude={"delegation_id"}) == previous.task.model_dump(exclude={"delegation_id"})):
+                    raise ValueError("上一委派尚未完成；需要调整要求、输入或完成条件，或向用户提问，不能原样重复委派")
             self._validate_references(task.input_artifacts, context)
         elif isinstance(decision, FinishDecision):
             self._validate_references(decision.artifacts, context)
@@ -104,7 +113,8 @@ class AgentRegistry:
 
 
 def build_agent_registry(skill_library: SkillLibrary,
-                         agents: Mapping[AgentRole, object] | None = None) -> AgentRegistry:
+                         agents: Mapping[AgentRole, object] | None = None,
+                         execution: ExecutionConfig | None = None) -> AgentRegistry:
     """可信默认配置；技能取角色现有授权的快照，访问时仍检查实时撤销/禁用。"""
     descriptions: dict[AgentRole, tuple[str, tuple[str, ...]]] = {
         "supervisor": ("主 Agent：协调内容团队", SUPERVISOR_RESPONSIBILITIES),
@@ -120,9 +130,15 @@ def build_agent_registry(skill_library: SkillLibrary,
     registry = AgentRegistry(skill_library)
     for role, (description, responsibilities) in descriptions.items():
         specialist = role not in {"supervisor", "publishing"}
+        settings = (execution or ExecutionConfig()).for_role(role)
+        available = getattr(agents.get(role), "available_tools", SKILL_READ_TOOLS) if specialist else ()
+        granted = tuple(skill.id for skill in skill_library.for_agent(role).catalog())
+        tools = settings.tools if specialist and settings.tools is not None else available
+        if not set(tools).issubset(available):
+            raise ValueError(f"{role} 请求的工具未配置执行实现")
         registry.register(AgentDefinition(
             agent_id=role, description=description, responsibilities=responsibilities,
-            skill_ids=tuple(skill.id for skill in skill_library.for_agent(role).catalog()),
-            tool_names=SKILL_READ_TOOLS if specialist else (), delegatable=specialist,
+            skill_ids=settings.skill_ids if specialist and settings.skill_ids is not None else granted,
+            tool_names=tools, delegatable=specialist,
         ), agents.get(role))
     return registry

@@ -1,0 +1,43 @@
+{
+  "execution": {
+    "roles": {
+      "ideation": {
+        "prompt": "以用户目标为先，选题要有具体角度。",
+        "tools": ["load_skill", "read_skill_resource"],
+        "max_model_calls": 6
+      },
+      "research": {
+        "prompt": "优先寻找原始公告和一手资料，区分已证实事实与待确认内容。",
+        "tools": ["load_skill", "read_skill_resource", "web_search", "web_fetch"],
+        "max_model_calls": 10,
+        "max_tool_calls": 16
+      },
+      "creation": {
+        "prompt": "文案符合用户画像，配图与内容一致；修改时落实具体反馈。",
+        "tools": ["load_skill", "read_skill_resource", "generate_image"],
+        "supports_vision": false,
+        "max_model_calls": 10
+      },
+      "review": {
+        "prompt": "对照用户要求、输入素材和证据给出具体问题，不替用户批准。",
+        "tools": ["load_skill", "read_skill_resource", "run_rules"],
+        "max_model_calls": 8
+      }
+    },
+    "search": {
+      "provider": "tavily",
+      "base_url": "https://api.tavily.com",
+      "api_key_env": "TAVILY_API_KEY",
+      "timeout": 60
+    },
+    "images": {
+      "provider": "openai",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "XHS_IMAGE_API_KEY",
+      "model": "REPLACE_WITH_YOUR_IMAGE_MODEL",
+      "size": "1024x1536",
+      "supports_edit": true,
+      "timeout": 180
+    }
+  }
+}

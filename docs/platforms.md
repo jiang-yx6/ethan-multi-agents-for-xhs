@@ -56,7 +56,8 @@ uv run xhs accounts list
 
 ```powershell
 uv run xhs create "周末路线" --no-trends --no-research
-uv run xhs select TASK_ID 0
+# 父 Agent 提问时回复，交付草稿后继续审核
+uv run xhs answer TASK_ID --text "采用第一个方向"
 uv run xhs replace-draft TASK_ID --file examples/xhs-note.json
 uv run xhs status TASK_ID
 uv run xhs preflight TASK_ID --platform xiaohongshu --account main

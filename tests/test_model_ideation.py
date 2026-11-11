@@ -6,8 +6,9 @@ import httpx
 import pytest
 
 from xhs_agent.agents.ideation import LLMIdeationAgent, MockIdeationAgent
+from xhs_agent.agents.supervisor import LLMSupervisorAgent, MockSupervisorAgent
 from xhs_agent.cli import main
-from xhs_agent.config import WorkflowConfig, load_ideation_llm
+from xhs_agent.config import AgentConfig, load_role_llm
 from xhs_agent.llm import (
     ChatMessage, ChatResponse, LLMConfigurationError, LLMHTTPError, LLMResponseError,
     ToolCall, create_llm_provider,
@@ -196,17 +197,17 @@ def test_both_http_protocols_support_real_skill_round_trip(protocol):
 
 def test_task_service_defaults_to_model_and_caches_completed_ideas(data_dir):
     provider = ScriptedProvider(answer())
-    svc = TaskService(data_dir, ideation_agent=LLMIdeationAgent(provider))
+    svc = TaskService(data_dir, ideation_agent=LLMIdeationAgent(provider), config=AgentConfig(supervisor_backend="mock"))
     try:
-        task = svc.create_task("路线")
-        assert task.status == "ideating"
+        task = svc.create_task(ContentRequest(goal="路线"))
+        assert task.status == "waiting_input"
         assert svc.candidate_ideas(task.task_id)[0].title == "周末江边散步路线"
-        assert svc.select_idea(task.task_id, 0).status == "pending_review"
+        assert svc.answer(task.task_id, "0").status == "pending_review"
         assert len(provider.requests) == 1
     finally:
         svc.close()
     assert not provider.closed
-    svc = TaskService(data_dir)
+    svc = TaskService(data_dir, config=AgentConfig(supervisor_backend="mock"))
     try:
         assert isinstance(svc.ideation_agent, LLMIdeationAgent)
         assert svc.candidate_ideas(task.task_id)
@@ -214,20 +215,26 @@ def test_task_service_defaults_to_model_and_caches_completed_ideas(data_dir):
         svc.close()
 
 
-def test_provider_error_marks_task_failed_and_retry_after_restart(data_dir):
+def test_provider_failure_returns_to_parent_and_new_delegation_after_reply(data_dir):
     provider = ScriptedProvider(LLMHTTPError(503))
-    svc = TaskService(data_dir, ideation_agent=LLMIdeationAgent(provider))
+    svc = TaskService(data_dir, ideation_agent=LLMIdeationAgent(provider), config=AgentConfig(supervisor_backend="mock"))
     try:
-        with pytest.raises(LLMHTTPError):
-            svc.create_task("路线")
-        task_id = svc.store._conn.execute("SELECT task_id FROM tasks").fetchone()[0]
-        assert svc.status(task_id).status == "failed"
+        task = svc.create_task(ContentRequest(goal="路线"))
+        task_id = task.task_id
+        assert task.status == "waiting_input"
+        failed = svc.collaboration(task_id)["history"][0]
+        assert failed["result"]["status"] == "failed"
+        assert "503" in svc.workflow(task_id).interrupts[0].value["question"]
     finally:
         svc.close()
     provider = ScriptedProvider(answer())
-    svc = TaskService(data_dir, ideation_agent=LLMIdeationAgent(provider))
+    svc = TaskService(data_dir, ideation_agent=LLMIdeationAgent(provider), config=AgentConfig(supervisor_backend="mock"))
     try:
-        assert svc.retry(task_id).status == "ideating"
+        assert svc.answer(task_id, "接口已修复，请继续选题").status == "waiting_input"
+        history = svc.collaboration(task_id)["history"]
+        assert [record["result"]["status"] for record in history] == ["failed", "completed"]
+        assert history[0] == failed
+        assert history[0]["task"]["delegation_id"] != history[1]["task"]["delegation_id"]
         assert svc.status(task_id).last_error is None
     finally:
         svc.close()
@@ -238,27 +245,37 @@ def test_missing_configuration_is_explicit_and_read_only_commands_still_work(tmp
         raise LLMConfigurationError("缺少配置")
 
     monkeypatch.setattr("xhs_agent.agents.ideation.create_llm_provider", unconfigured)
-    svc = TaskService(tmp_path / "data")
+    svc = TaskService(tmp_path / "data", config=AgentConfig(supervisor_backend="mock"))
     try:
         assert isinstance(svc.ideation_agent, LLMIdeationAgent)
         with pytest.raises(LLMConfigurationError, match="XHS_LLM_PROVIDER"):
-            svc.create_task("路线")
+            svc.create_task(ContentRequest(goal="路线"))
         task_id = svc.store._conn.execute("SELECT task_id FROM tasks").fetchone()[0]
         assert svc.status(task_id).status == "failed"
     finally:
         svc.close()
-    svc = TaskService(tmp_path / "offline", config=WorkflowConfig(ideation_backend="mock"))
+    svc = TaskService(tmp_path / "offline", config=AgentConfig(ideation_backend="mock", supervisor_backend="mock"))
     try:
         assert isinstance(svc.ideation_agent, MockIdeationAgent)
-        assert svc.create_task("路线").status == "ideating"
+        assert svc.create_task(ContentRequest(goal="路线")).status == "waiting_input"
     finally:
         svc.close()
 
 
-def test_cli_loads_role_config_uses_model_and_closes_owned_provider(tmp_path, monkeypatch, capsys):
+@pytest.fixture
+def offline_parent(monkeypatch):
+    def decide(self, context):
+        request = context.request.model_copy(update={"topic": ""})
+        return MockSupervisorAgent.decide(self, context.model_copy(update={"request": request}))
+    monkeypatch.setattr(LLMSupervisorAgent, "decide", decide)
+
+
+def test_cli_loads_role_config_uses_model_and_closes_owned_provider(tmp_path, monkeypatch, capsys, offline_parent):
     path = tmp_path / "llm.json"
     path.write_text(json.dumps({"ideation": {"provider": "deepseek", "model": "test-model",
-                                          "api_key_env": "TEST_MODEL_KEY"}, "research": {}}), encoding="utf-8")
+                                          "api_key_env": "TEST_MODEL_KEY"},
+                                "supervisor": {"provider": "deepseek", "model": "parent-test-model",
+                                               "api_key_env": "SUPERVISOR_TEST_KEY"}}), encoding="utf-8")
     provider = ScriptedProvider(answer())
     configs = []
 
@@ -272,7 +289,7 @@ def test_cli_loads_role_config_uses_model_and_closes_owned_provider(tmp_path, mo
     assert configs[0].provider == "deepseek" and configs[0].model == "test-model"
     assert provider.closed and len(provider.requests) == 1
     assert "周末江边散步路线" in capsys.readouterr().out
-    assert main(["--data-dir", str(tmp_path / "offline"), "--mock-ideation", "create", "路线"]) == 0
+    assert main(["--data-dir", str(tmp_path / "offline"), "--mock-ideation", "--mock-supervisor", "create", "路线"]) == 0
 
 
 def test_invalid_role_config_does_not_print_raw_secret_values(tmp_path):
@@ -280,11 +297,11 @@ def test_invalid_role_config_does_not_print_raw_secret_values(tmp_path):
     path.write_text(json.dumps({"ideation": {"provider": "deepseek", "model": 123,
                                           "api_key": "never-echo-this-value"}}), encoding="utf-8")
     with pytest.raises(ValueError) as caught:
-        load_ideation_llm(path)
+        load_role_llm(path, "ideation")
     assert "never-echo-this-value" not in str(caught.value)
 
 
-def test_cli_reports_failed_task_id_and_can_retry_with_model(tmp_path, monkeypatch, capsys):
+def test_cli_reports_failed_task_id_and_can_retry_with_model(tmp_path, monkeypatch, capsys, offline_parent):
     def fail(*args, **kwargs):
         raise LLMConfigurationError("缺少配置")
 

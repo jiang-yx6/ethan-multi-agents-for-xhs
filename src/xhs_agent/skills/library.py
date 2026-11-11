@@ -13,7 +13,8 @@ from uuid import uuid4
 
 import yaml
 
-from .models import AGENT_ROLES, AgentRole, LoadedSkill, SkillDefinition, SkillRegistry, SkillSource, SkillSummary
+from ..models.base import AGENT_ROLES, AgentRole
+from .models import LoadedSkill, SkillDefinition, SkillRegistry, SkillSource, SkillSummary
 
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills"
 MAX_TEXT_BYTES = 256 * 1024

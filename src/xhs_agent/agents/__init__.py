@@ -6,8 +6,15 @@ from .publishing import MockPublisher
 from .research import MockResearchAgent
 from .review import RuleReviewAgent
 from .registry import AgentRegistry, build_agent_registry
+from .supervisor import LLMSupervisorAgent, MockSupervisorAgent
+from .structured import LLMCreationAgent, LLMResearchAgent, LLMReviewAgent
 
 __all__ = [
+    "LLMSupervisorAgent",
+    "LLMResearchAgent",
+    "LLMCreationAgent",
+    "LLMReviewAgent",
+    "MockSupervisorAgent",
     "SupervisorAgent",
     "DelegatedAgent",
     "AgentRegistry",

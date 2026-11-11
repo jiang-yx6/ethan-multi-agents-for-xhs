@@ -250,6 +250,7 @@ export default function App() {
   async function action(
     kind: string,
     params: Record<string, unknown> = {},
+    onAccepted?: () => void,
   ): Promise<boolean> {
     const current = detailRef.current;
     if (!current || pending) return false;
@@ -260,9 +261,10 @@ export default function App() {
         request_id: crypto.randomUUID(),
         expected_version: current.task.current_version,
         ...([
-          "select",
           "drafts",
           "changes",
+          "answer",
+          "message",
           "approve",
           "cancel",
           "publish",
@@ -271,6 +273,7 @@ export default function App() {
           : {}),
         ...params,
       });
+      onAccepted?.();
       await refreshDetail();
       await waitForJob(job);
       await Promise.all([refreshTasksRef.current(), refreshDetail()]);
@@ -311,7 +314,7 @@ export default function App() {
       ? tasks.filter((item) =>
           [
             "pending",
-            "ideating",
+            "waiting_input",
             "pending_review",
             "approved",
             "submitted",
@@ -407,11 +410,15 @@ export default function App() {
           </div>
         </header>
         <div className="demo-banner">
-          <span className="banner-dot" />
-          选题：{health?.ideation_backend === "mock"
-            ? "离线示例"
-            : "真实模型"}{" "}
-          · 资料与创作：Mock · 审核：基本规则；发布需明确选择账号并确认。
+          <span className="banner-dot" />父 Agent：
+          {health?.supervisor_backend === "mock" ? "离线示例" : "真实模型"} ·
+          选题：{health?.ideation_backend === "mock" ? "离线示例" : "真实模型"}{" "}
+          · 资料：{health?.stages?.research === "llm" ? "模型整理" : "离线示例"}
+          {" · "}创作：
+          {health?.stages?.creation === "llm" ? "真实模型" : "离线示例"}
+          {" · "}审核：
+          {health?.stages?.review === "llm" ? "模型与规则" : "本地规则"}
+          ；发布需人工确认。
         </div>
         <main id="main" tabIndex={-1}>
           {error && (

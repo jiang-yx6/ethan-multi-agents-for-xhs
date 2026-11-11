@@ -5,9 +5,9 @@ def test_old_approval_invalidated_and_reapprove(service_factory):
     svc = service_factory()
     task = svc.create_task("10 分钟快手早餐")
     task_id = task.task_id
-    assert task.status == "ideating"
+    assert task.status == "pending_review"
 
-    after = svc.select_idea(task_id, 0)
+    after = svc.status(task_id)
     assert after.current_version == 1
     assert after.status == "pending_review"
 

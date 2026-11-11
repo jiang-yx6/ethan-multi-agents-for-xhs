@@ -45,6 +45,8 @@ class ContentRequest(BaseModel):
     needs_research: bool = True
     supplied_materials: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
+    input_images: list[str] = Field(default_factory=list)
+    generate_images: bool = False
 
     @field_validator("goal")
     @classmethod
@@ -69,6 +71,7 @@ class TaskView(BaseModel):
     """面向 CLI 的任务状态视图。"""
 
     task_id: str
+    workflow_version: int = 2
     topic: str
     status: str
     current_version: int
@@ -100,7 +103,7 @@ class WorkflowView(BaseModel):
 
     thread_id: str
     checkpoint_id: str | None = None
-    status: Literal["not_started", "ready", "waiting_input", "failed", "completed", "inconsistent", "queued", "running"]
+    status: Literal["not_started", "ready", "waiting_input", "failed", "completed", "inconsistent", "queued", "running", "unsupported"]
     next_nodes: list[str] = Field(default_factory=list)
     interrupts: list[WorkflowInterrupt] = Field(default_factory=list)
     error: str | None = None

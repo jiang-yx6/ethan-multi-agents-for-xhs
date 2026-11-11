@@ -10,13 +10,13 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from xhs_agent.agents.ideation import MockIdeationAgent
-from xhs_agent.config import WorkflowConfig
+from xhs_agent.config import AgentConfig
 from xhs_agent.models import ContentRequest
 from xhs_agent.platforms import AccountIdentity, PublishReceipt
 from xhs_agent.platforms.xiaohongshu import XiaohongshuConnector
 from xhs_agent.service import TaskService
 from xhs_agent.web import create_app
-from xhs_agent.web.app import credential_scope, fingerprint
+from xhs_agent.web.app import credential_scope
 from xhs_agent.web.repository import WebRepository
 
 
@@ -50,7 +50,7 @@ def web(tmp_path):
     def factory(config, on_event):
         return TaskService(root, config=config, on_event=on_event, connector_factory=lambda name: connector)
 
-    app = create_app(root, config=WorkflowConfig(ideation_backend="mock"), service_factory=factory)
+    app = create_app(root, config=AgentConfig(ideation_backend="mock", supervisor_backend="mock"), service_factory=factory)
     with TestClient(app) as client:
         yield client, app, root, connector
 
@@ -67,8 +67,8 @@ def wait(client, response):
     pytest.fail("作业未在测试期限内完成")
 
 
-def new_task(client):
-    payload = {"request_id": str(uuid.uuid4()), "request": {"goal": "周末路线", "use_trends": False, "needs_research": False}}
+def new_task(client, needs_research=False):
+    payload = {"request_id": str(uuid.uuid4()), "request": {"goal": "周末路线", "use_trends": False, "needs_research": needs_research}}
     response = client.post("/api/tasks", json=payload)
     job = wait(client, response)
     assert job["status"] == "succeeded", job
@@ -79,20 +79,20 @@ def action(client, task_id, kind, **extra):
     detail = client.get(f"/api/tasks/{task_id}").json()
     task = detail["task"]
     pause = ({"interrupt_id": detail["workflow"]["interrupts"][0]["id"] if detail["workflow"]["interrupts"] else "unavailable"}
-             if kind in {"select", "drafts", "changes", "approve", "cancel", "publish"} else {})
+             if kind in {"answer", "drafts", "changes", "approve", "cancel", "publish"} else {})
     return client.post(f"/api/tasks/{task_id}/{kind}", json={"request_id": str(uuid.uuid4()),
                         "expected_version": task["current_version"], **pause, **extra})
 
 
-def selected_task(client):
+def review_task(client):
     task_id, _ = new_task(client)
-    assert wait(client, action(client, task_id, "select", index=0))["status"] == "succeeded"
+    assert wait(client, action(client, task_id, "answer", answer="0"))["status"] == "succeeded"
     return task_id
 
 
 def test_full_workflow_versions_prevent_stale_approval_and_export(web):
     client, _, _, _ = web
-    task_id = selected_task(client)
+    task_id = review_task(client)
     detail = client.get(f"/api/tasks/{task_id}").json()
     assert "approve" in detail["allowed_actions"]
     task = detail["task"]
@@ -193,6 +193,7 @@ def test_direct_key_is_bound_to_provider_and_endpoint(web, changed):
 
 def test_direct_key_reaches_model_config_and_survives_server_restart(tmp_path, monkeypatch):
     from xhs_agent.agents.ideation import MockIdeationAgent
+    from xhs_agent.agents.supervisor import MockSupervisorAgent
 
     root, seen = tmp_path / "credential-restart", []
     monkeypatch.setenv("DEEPSEEK_API_KEY", "environment-key-must-not-override")
@@ -200,10 +201,11 @@ def test_direct_key_reaches_model_config_and_survives_server_restart(tmp_path, m
     def factory(config, on_event):
         if config.ideation_llm:
             seen.append(config.ideation_llm.api_key.get_secret_value())
-        return TaskService(root, config=config, ideation_agent=MockIdeationAgent(), on_event=on_event)
+        return TaskService(root, config=config, ideation_agent=MockIdeationAgent(),
+                           supervisor_agent=MockSupervisorAgent(), on_event=on_event)
 
     def app():
-        return create_app(root, config=WorkflowConfig(ideation_backend="mock"), service_factory=factory)
+        return create_app(root, config=AgentConfig(ideation_backend="mock", supervisor_backend="mock"), service_factory=factory)
 
     payload = {"backend": "llm", "provider": "deepseek", "model": "test-model", "credential_source": "api_key"}
     with TestClient(app()) as client:
@@ -238,7 +240,7 @@ def test_invalid_key_update_and_corrupted_ciphertext_do_not_expose_credentials(w
 
 def test_media_and_uncertain_publish_do_not_repeat_submission(web):
     client, _, _, connector = web
-    task_id = selected_task(client)
+    task_id = review_task(client)
     assert client.post("/api/media", files={"file": ("wrong.png", b"not an image", "image/png")}).status_code == 422
     uploaded = client.post("/api/media", files={"file": ("../../photo.png", PNG, "image/png")}).json()
     assert client.get(uploaded["url"]).content == PNG
@@ -272,7 +274,7 @@ def test_untrusted_origin_and_path_inputs_are_rejected(web):
     client, _, _, _ = web
     assert client.post("/api/accounts", json={"account": {"platform": "xiaohongshu", "account_id": "a"}},
                        headers={"Origin": "https://untrusted.example"}).status_code == 403
-    task_id = selected_task(client)
+    task_id = review_task(client)
     response = action(client, task_id, "drafts", title="标题", body="正文", images=[{"description": "非法", "source": "C:/secret.txt"}])
     assert response.status_code == 422
     assert client.get("/api/media/not-existing").status_code == 404
@@ -299,7 +301,7 @@ def test_duplicate_write_is_blocked_while_model_is_running(tmp_path):
 
     root = tmp_path / "slow"
     def factory(config, on_event): return TaskService(root, ideation_agent=SlowAgent(), config=config)
-    with TestClient(create_app(root, config=WorkflowConfig(ideation_backend="mock"), service_factory=factory)) as client:
+    with TestClient(create_app(root, config=AgentConfig(ideation_backend="mock", supervisor_backend="mock"), service_factory=factory)) as client:
         payload = {"request_id": str(uuid.uuid4()), "request": {"goal": "测试长任务"}}
         response = client.post("/api/tasks", json=payload)
         assert entered.wait(3)
@@ -313,16 +315,16 @@ def test_duplicate_write_is_blocked_while_model_is_running(tmp_path):
 
 def test_restart_restores_safe_approval_gate_without_replaying_job(tmp_path):
     root = tmp_path / "restart"
-    service = TaskService(root, config=WorkflowConfig(ideation_backend="mock"))
+    service = TaskService(root, config=AgentConfig(ideation_backend="mock", supervisor_backend="mock"))
     task = service.create_task(ContentRequest(goal="重启恢复"))
-    service.select_idea(task.task_id, 0)
+    service.answer(task.task_id, "0")
     service.approve(task.task_id)
     service.close()
     repo = WebRepository(root)
     job, _ = repo.enqueue(request_id=str(uuid.uuid4()), fingerprint="test", resource="task:"+task.task_id,
                           task_id=task.task_id, kind="approve", params={})
     repo.start(job["job_id"])
-    with TestClient(create_app(root, config=WorkflowConfig(ideation_backend="mock"))) as client:
+    with TestClient(create_app(root, config=AgentConfig(ideation_backend="mock", supervisor_backend="mock"))) as client:
         detail = client.get(f"/api/tasks/{task.task_id}").json()
         assert detail["task"]["status"] == "approved"
         assert detail["workflow"]["status"] == "waiting_input"
@@ -339,16 +341,16 @@ def test_workflow_exposes_real_gates_and_releases_job_between_pauses(web):
     detail = client.get(f"/api/tasks/{task_id}").json()
     first = detail["workflow"]
     assert first["thread_id"] == task_id and first["checkpoint_id"]
-    assert first["status"] == "waiting_input" and first["next_nodes"] == ["select_idea"]
-    assert detail["job"]["status"] == "succeeded" and detail["allowed_actions"] == ["select"]
-    assert first["interrupts"][0]["actions"] == ["select"]
-    assert wait(client, action(client, task_id, "select", index=0))["status"] == "succeeded"
+    assert first["status"] == "waiting_input" and first["next_nodes"] == ["ask_user"]
+    assert detail["job"]["status"] == "succeeded" and detail["allowed_actions"] == ["answer", "cancel"]
+    assert first["interrupts"][0]["actions"] == ["answer", "cancel"]
+    assert wait(client, action(client, task_id, "answer", answer="0"))["status"] == "succeeded"
     detail = client.get(f"/api/tasks/{task_id}").json()
     assert detail["workflow"]["next_nodes"] == ["review"]
     assert detail["workflow"]["interrupts"][0]["id"] != first["interrupts"][0]["id"]
     assert detail["workflow"]["interrupts"][0]["value"]["version"] == 1
     assert "draft" not in detail["workflow"]["interrupts"][0]["value"]
-    assert {event["node"] for event in detail["events"] if event["kind"] == "graph_step"} >= {"research", "create", "quality_review"}
+    assert {event["node"] for event in detail["events"] if event["kind"] == "graph_step"} >= {"supervisor", "execute_agent", "finish"}
     assert any(event["kind"] == "graph_paused" for event in detail["events"])
     assert client.get(f"/api/tasks/{task_id}/workflow").json()["workflow"] == detail["workflow"]
     stream = client.get(f"/api/jobs/{detail['job']['job_id']}/events").text
@@ -358,7 +360,7 @@ def test_workflow_exposes_real_gates_and_releases_job_between_pauses(web):
 
 def test_stale_interrupt_is_rejected_at_http_and_worker_with_same_version(web):
     client, app, root, _ = web
-    task_id = selected_task(client)
+    task_id = review_task(client)
     before = client.get(f"/api/tasks/{task_id}").json()
     old_id = before["workflow"]["interrupts"][0]["id"]
     assert wait(client, action(client, task_id, "approve"))["status"] == "succeeded"
@@ -376,7 +378,7 @@ def test_stale_interrupt_is_rejected_at_http_and_worker_with_same_version(web):
         assert time.monotonic() < deadline
         time.sleep(.02)
     assert app.state.repository.job(job["job_id"])["status"] == "failed"
-    service = TaskService(root, config=WorkflowConfig(ideation_backend="mock"))
+    service = TaskService(root, config=AgentConfig(ideation_backend="mock", supervisor_backend="mock"))
     try:
         assert service.status(task_id).status == "approved"
         assert service.workflow(task_id).interrupts[0].id == after["workflow"]["interrupts"][0]["id"]
@@ -386,8 +388,8 @@ def test_stale_interrupt_is_rejected_at_http_and_worker_with_same_version(web):
 
 def test_business_status_cannot_override_actual_graph_gate(web):
     client, _, root, _ = web
-    task_id = selected_task(client)
-    service = TaskService(root, config=WorkflowConfig(ideation_backend="mock"))
+    task_id = review_task(client)
+    service = TaskService(root, config=AgentConfig(ideation_backend="mock", supervisor_backend="mock"))
     service.store.update_status(task_id, "approved")
     service.close()
     detail = client.get(f"/api/tasks/{task_id}").json()
@@ -403,13 +405,13 @@ def test_business_status_cannot_override_actual_graph_gate(web):
 
 def test_restart_of_unexecuted_job_needs_manual_retry(tmp_path):
     root = tmp_path / "unstarted"
-    service = TaskService(root, config=WorkflowConfig(ideation_backend="mock"))
+    service = TaskService(root, config=AgentConfig(ideation_backend="mock", supervisor_backend="mock"))
     task = service.register_task(ContentRequest(goal="执行前中断"))
     service.close()
     repo = WebRepository(root)
     repo.enqueue(request_id=str(uuid.uuid4()), fingerprint="queued-create", resource="task:"+task.task_id,
                  task_id=task.task_id, kind="create", params={})
-    with TestClient(create_app(root, config=WorkflowConfig(ideation_backend="mock"))) as client:
+    with TestClient(create_app(root, config=AgentConfig(ideation_backend="mock", supervisor_backend="mock"))) as client:
         detail = client.get(f"/api/tasks/{task.task_id}").json()
         assert detail["task"]["status"] == "failed" and detail["ideas"] == []
         assert detail["workflow"]["status"] == "not_started" and detail["allowed_actions"] == ["retry"]
@@ -434,11 +436,11 @@ def test_graph_node_failure_is_retryable_and_returns_to_human_review(tmp_path):
     def factory(config, on_event):
         return TaskService(root, config=config, on_event=on_event, research_agent=agent)
 
-    with TestClient(create_app(root, config=WorkflowConfig(ideation_backend="mock"), service_factory=factory)) as client:
-        task_id, _ = new_task(client)
-        assert wait(client, action(client, task_id, "select", index=0))["status"] == "failed"
+    with TestClient(create_app(root, config=AgentConfig(ideation_backend="mock", supervisor_backend="mock"), service_factory=factory)) as client:
+        task_id, _ = new_task(client, needs_research=True)
+        assert wait(client, action(client, task_id, "answer", answer="0"))["status"] == "failed"
         failed = client.get(f"/api/tasks/{task_id}").json()
-        assert failed["workflow"]["status"] == "failed" and failed["workflow"]["next_nodes"] == ["research"]
+        assert failed["workflow"]["status"] == "failed" and failed["workflow"]["next_nodes"] == ["execute_agent"]
         assert failed["allowed_actions"] == ["retry"] and failed["workflow"]["interrupts"] == []
         assert wait(client, action(client, task_id, "retry"))["status"] == "succeeded"
         resumed = client.get(f"/api/tasks/{task_id}").json()
@@ -448,7 +450,7 @@ def test_graph_node_failure_is_retryable_and_returns_to_human_review(tmp_path):
 
 def test_only_one_web_server_can_own_a_data_directory(tmp_path):
     root = tmp_path / "locked"
-    with TestClient(create_app(root, config=WorkflowConfig(ideation_backend="mock"))):
+    with TestClient(create_app(root, config=AgentConfig(ideation_backend="mock", supervisor_backend="mock"))):
         with pytest.raises(RuntimeError, match="已有 Web 服务"):
-            with TestClient(create_app(root, config=WorkflowConfig(ideation_backend="mock"))):
+            with TestClient(create_app(root, config=AgentConfig(ideation_backend="mock", supervisor_backend="mock"))):
                 pass

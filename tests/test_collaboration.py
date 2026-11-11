@@ -118,6 +118,17 @@ def test_context_rejects_mixed_tasks_and_duplicate_delegations(registry):
             context(registry, **changes)
 
 
+def test_failed_delegation_cannot_repeat_without_changed_inputs_or_user_reply(registry):
+    previous = task()
+    record = DelegationRecord(task=previous, result=result(status="failed", failure_reason="输出不满足要求"))
+    repeated = DelegateDecision(action="delegate", reason="重试", task=previous.model_copy(update={"delegation_id": "new"}))
+    with pytest.raises(ValueError, match="不能原样重复"):
+        registry.validate_decision(repeated, context(registry, history=(record,)))
+    assert registry.validate_decision(repeated, context(registry, history=(record,), user_messages=("已修复配置",))) == repeated
+    changed = repeated.model_copy(update={"task": repeated.task.model_copy(update={"instruction": "缩短结果并保留来源"})})
+    assert registry.validate_decision(changed, context(registry, history=(record,))) == changed
+
+
 def test_decisions_cannot_reuse_history_or_invent_artifacts(registry):
     record = DelegationRecord(task=task(), result=result())
     with pytest.raises(ValueError, match="委派 ID"):
@@ -258,14 +269,14 @@ def test_model_cannot_execute_an_unadvertised_skill_tool(tools):
     assert "instructions" not in reply.content
 
 
-def test_task_service_assembles_registry_without_running_a_supervisor(service_factory):
+def test_task_service_assembles_children_and_runs_the_parent(service_factory):
     service = service_factory()
     try:
-        assert service.agent_registry.agent("ideation") is service.ideation_agent
+        assert service.agent_registry.agent("ideation").agent is service.ideation_agent
         assert service.ideation_agent.allowed_tools == ("load_skill", "read_skill_resource")
         assert service.publisher.allowed_tools == ()
         task_view = service.create_task("周末出游")
-        assert task_view.status == "ideating"
-        assert service.select_idea(task_view.task_id, 0).status == "pending_review"
+        assert task_view.status == "pending_review"
+        assert service.collaboration(task_view.task_id)["history"]
     finally:
         service.close()

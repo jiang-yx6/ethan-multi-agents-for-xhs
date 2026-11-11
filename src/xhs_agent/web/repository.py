@@ -110,10 +110,15 @@ class WebRepository:
                          (identifier, profile.model_dump_json(), now()))
         return identifier
 
-    def setting(self) -> dict | None:
+    def setting(self, role: str = "ideation") -> dict | None:
         with self.connection() as conn:
-            row = conn.execute("SELECT payload FROM settings WHERE key='ideation'").fetchone()
+            row = conn.execute("SELECT payload FROM settings WHERE key=?", (role,)).fetchone()
         return json.loads(row[0]) if row else None
+
+    def delete_setting(self, role: str) -> None:
+        # 只撤销该角色的网页覆盖；已有加密凭据保留，但跟随启动配置时不读取它们。
+        with self.connection() as conn:
+            conn.execute("DELETE FROM settings WHERE key=?", (role,))
 
     def has_api_key(self, scope: str) -> bool:
         with self.connection() as conn:
@@ -125,7 +130,7 @@ class WebRepository:
         return self.cipher.decrypt(scope, bytes(row[0])) if row else None
 
     def save_setting(self, payload: dict, *, scope: str | None = None,
-                     api_key: SecretStr | None = None, clear_api_key: bool = False) -> None:
+                     api_key: SecretStr | None = None, clear_api_key: bool = False, role: str = "ideation") -> None:
         # 元数据和凭据更新处于同一事务；加密失败时不提交新配置。
         encrypted = self.cipher.encrypt(scope, api_key) if api_key is not None and scope is not None else None
         public = {key: value for key, value in payload.items() if key not in {"api_key", "clear_api_key"}}
@@ -136,8 +141,8 @@ class WebRepository:
                 elif encrypted is not None:
                     conn.execute("INSERT INTO credentials VALUES (?, ?) ON CONFLICT(scope) DO UPDATE SET encrypted=excluded.encrypted",
                                  (scope, encrypted))
-            conn.execute("INSERT INTO settings VALUES ('ideation', ?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload",
-                         (json.dumps(public, ensure_ascii=False),))
+            conn.execute("INSERT INTO settings VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload",
+                         (role, json.dumps(public, ensure_ascii=False)))
 
     @staticmethod
     def _job(row) -> dict | None:

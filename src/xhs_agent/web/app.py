@@ -13,24 +13,24 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from pydantic import SecretStr
+from dotenv import load_dotenv
 
-from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from ..config import WorkflowConfig
+from ..config import AgentConfig, MODEL_ROLES, ModelRole
 from ..llm import LLMConfig, list_provider_presets
-from ..models import UserProfile
 from ..platforms import AccountRef, create_platform_connector
 from ..platforms.content import local_image_path
 from ..service import TaskService
 from ..skills import SkillLibrary
 from ..workflow import TERMINAL, WorkflowConflictError, allowed_actions, gate_status
 from .jobs import JobRunner, public_job
-from .models import (AccountInput, ChangeAction, ConfirmAction, CreateTask, DraftAction,
-                     LoginAction, ModelSettings, ModelSettingsUpdate, ProfileInput, PublishAction, SelectAction,
+from .models import (AccountInput, AnswerAction, ChangeAction, ConfirmAction, CopyModelSettings, CreateTask, DraftAction,
+                     LoginAction, MessageAction, ModelSettings, ModelSettingsUpdate, ProfileInput, PublishAction,
                      ResumeAction, TargetInput, TaskAction)
 from .repository import ConflictError, WebRepository
 
@@ -40,35 +40,40 @@ def fingerprint(kind: str, resource: str, payload: dict) -> str:
     return hashlib.sha256(json.dumps([kind, resource, body], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
-def credential_scope(values: dict) -> str:
+def credential_scope(values: dict, role: str = "ideation") -> str:
     """凭据绑定角色、服务商、协议和实际接口地址；模型 ID 变化可复用同一接口凭据。"""
     provider = values["provider"].strip().lower().replace("_", "-")
     preset = list_provider_presets().get(provider)
     protocol = values.get("protocol") or (preset.protocol if preset else None)
     url = values.get("base_url") or (preset.base_url if preset else "")
-    return hashlib.sha256(json.dumps(["ideation", provider, protocol, url.rstrip("/")]).encode()).hexdigest()
+    return hashlib.sha256(json.dumps([role, provider, protocol, url.rstrip("/")]).encode()).hexdigest()
 
 
-def create_app(data_dir: str | Path = "data", *, config: WorkflowConfig | None = None,
+def create_app(data_dir: str | Path = "data", *, config: AgentConfig | None = None,
                skill_library: SkillLibrary | None = None, service_factory=None,
                dist_dir: str | Path | None = None) -> FastAPI:
+    load_dotenv(override=False, encoding="utf-8-sig")
     root = Path(data_dir).resolve()
-    base_config = config or WorkflowConfig()
+    base_config = config or AgentConfig()
     library = skill_library or SkillLibrary()
     repo = WebRepository(root)
 
-    def effective_config() -> WorkflowConfig:
-        saved = repo.setting()
-        if saved is None:
-            return base_config
-        values = ModelSettings.model_validate(saved)
-        # 显式空密钥阻止工厂在直接配置模式下偷偷回退到环境变量。
-        api_key = ((repo.api_key(credential_scope(saved)) or SecretStr(""))
-                   if values.credential_source == "api_key" else None)
-        llm = LLMConfig(provider=values.provider, model=values.model, api_key_env=values.api_key_env,
-                        api_key=api_key, protocol=values.protocol, base_url=values.base_url,
-                        trust_env=values.trust_env) if values.backend == "llm" else None
-        return base_config.model_copy(update={"ideation_backend": values.backend, "ideation_llm": llm})
+    def effective_config() -> AgentConfig:
+        updates = {}
+        for role in MODEL_ROLES:
+            saved = repo.setting(role)
+            if saved is None:
+                continue
+            values = ModelSettings.model_validate(saved)
+            # 每个角色单独查找加密密钥；显式空密钥阻止环境变量回退。
+            api_key = ((repo.api_key(credential_scope(saved, role)) or SecretStr(""))
+                       if values.credential_source == "api_key" else None)
+            llm = LLMConfig(provider=values.provider, model=values.model, api_key_env=values.api_key_env,
+                            api_key=api_key, protocol=values.protocol, base_url=values.base_url,
+                            trust_env=values.trust_env, max_tokens=values.max_tokens,
+                            timeout=values.timeout) if values.backend == "llm" else None
+            updates.update({f"{role}_backend": values.backend, f"{role}_llm": llm})
+        return base_config.model_copy(update=updates)
 
     def make_service(on_event=None):
         current = effective_config()
@@ -106,7 +111,7 @@ def create_app(data_dir: str | Path = "data", *, config: WorkflowConfig | None =
             if origin and origin not in allowed:
                 return JSONResponse({"detail": "此本地工作区不接受该来源的写操作"}, status_code=403)
         response = await call_next(request)
-        if request.url.path.startswith("/api/settings/"):
+        if request.url.path == "/api/settings" or request.url.path.startswith("/api/settings/"):
             response.headers["Cache-Control"] = "no-store"
         return response
 
@@ -161,8 +166,6 @@ def create_app(data_dir: str | Path = "data", *, config: WorkflowConfig | None =
                 raise ConflictError("当前任务状态不支持该操作，请刷新状态")
             if isinstance(body, ResumeAction):
                 svc.validate_resume(task_id, kind, body.interrupt_id)
-            if kind == "select" and body.index >= len(svc.candidate_ideas(task_id)):
-                raise ValueError("选题序号超出范围")
             if kind == "publish":
                 svc.platform_publishing.prepare(task_id, body.account)
             if kind == "draft":
@@ -176,8 +179,11 @@ def create_app(data_dir: str | Path = "data", *, config: WorkflowConfig | None =
 
     @app.get("/api/health")
     def health():
-        return {"ok": True, "mode": "local", "ideation_backend": effective_config().ideation_backend,
-                "stages": {"research": "mock", "creation": "mock", "review": "rules"}}
+        current = effective_config()
+        return {"ok": True, "mode": "local", "ideation_backend": current.ideation_backend,
+                "orchestration": "team",
+                "supervisor_backend": current.supervisor_backend,
+                "stages": {role: getattr(current, f"{role}_backend") for role in ("research", "creation", "review")}}
 
     @app.get("/api/tasks")
     def tasks(query: str = "", status: str = "", limit: int = Query(100, ge=1, le=100), offset: int = Query(0, ge=0)):
@@ -216,12 +222,30 @@ def create_app(data_dir: str | Path = "data", *, config: WorkflowConfig | None =
                       for i, image in enumerate(task.draft.images if task.draft else [])]
             return {"task": task, "ideas": svc.candidate_ideas(task_id), "images": images,
                     "job": public_job(job), "events": repo.events(job["job_id"]) if job else [],
-                    **workflow_state(svc, task, job)}
+                    "collaboration": svc.collaboration(task_id), **workflow_state(svc, task, job)}
 
     @app.get("/api/tasks/{task_id}/workflow")
     def workflow(task_id: str):
         with service() as svc:
             return workflow_state(svc, svc.status(task_id), repo.latest(task_id=task_id))
+
+    @app.get("/api/tasks/{task_id}/collaboration")
+    def collaboration(task_id: str):
+        with service() as svc:
+            return svc.collaboration(task_id)
+
+    @app.get("/api/tasks/{task_id}/artifacts")
+    def artifact(task_id: str, artifact_id: str, version: int = Query(ge=1)):
+        with service() as svc:
+            return svc.artifact(task_id, artifact_id, version)
+
+    @app.post("/api/tasks/{task_id}/message", status_code=202)
+    def message(body: MessageAction, task_id: str):
+        return queue_action(task_id, "message", body)
+
+    @app.post("/api/tasks/{task_id}/answer", status_code=202)
+    def answer(task_id: str, body: AnswerAction):
+        return queue_action(task_id, "answer", body)
 
     @app.get("/api/tasks/{task_id}/drafts/{version}")
     def get_draft(task_id: str, version: int):
@@ -248,9 +272,6 @@ def create_app(data_dir: str | Path = "data", *, config: WorkflowConfig | None =
             if path is None or not path.is_file():
                 raise KeyError("此图片仍为方案或文件已不存在")
             return FileResponse(path, media_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream")
-
-    @app.post("/api/tasks/{task_id}/select", status_code=202)
-    def select(task_id: str, body: SelectAction): return queue_action(task_id, "select", body)
 
     @app.post("/api/tasks/{task_id}/drafts", status_code=202)
     def replace(task_id: str, body: DraftAction): return queue_action(task_id, "draft", body)
@@ -305,43 +326,106 @@ def create_app(data_dir: str | Path = "data", *, config: WorkflowConfig | None =
         repo.save_profile(body.profile, profile_id)
         return {"profile_id": profile_id, "profile": body.profile}
 
-    @app.get("/api/settings/ideation")
-    def settings():
-        saved = repo.setting()
-        llm = base_config.ideation_llm
-        provider = llm.provider if llm else os.environ.get("XHS_LLM_PROVIDER", "deepseek")
+    def startup_settings(role: ModelRole) -> dict:
+        llm = getattr(base_config, f"{role}_llm")
+        prefix = "XHS_LLM_" if role == "ideation" else f"XHS_{role.upper()}_"
+        provider = llm.provider if llm else os.environ.get(prefix + "PROVIDER", "deepseek")
         preset = list_provider_presets().get(provider)
-        key_env = (llm.api_key_env if llm else os.environ.get("XHS_LLM_API_KEY_ENV")) or (
-            "XHS_LLM_API_KEY" if os.environ.get("XHS_LLM_API_KEY") else preset.api_key_env if preset else "XHS_LLM_API_KEY")
+        default_key_env = (prefix + "API_KEY" if role != "ideation" else
+                           "XHS_LLM_API_KEY" if os.environ.get("XHS_LLM_API_KEY") else
+                           preset.api_key_env if preset else "XHS_LLM_API_KEY")
+        key_env = (llm.api_key_env if llm else os.environ.get(prefix + "API_KEY_ENV")) or default_key_env
         # 即使启动文件误把密钥正文填进 api_key_env，也不将该值返回给浏览器。
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key_env):
-            key_env = preset.api_key_env if preset else "XHS_LLM_API_KEY"
-        public = ModelSettings.model_validate(saved).model_dump() if saved is not None else {
-            "backend": base_config.ideation_backend, "provider": provider,
-            "model": llm.model if llm else os.environ.get("XHS_LLM_MODEL", ""), "api_key_env": key_env,
+            key_env = default_key_env
+        public = {
+            "backend": getattr(base_config, f"{role}_backend"), "provider": provider,
+            "model": llm.model if llm else os.environ.get(prefix + "MODEL", ""), "api_key_env": key_env,
             "credential_source": "api_key" if (llm and llm.api_key) or not os.environ.get(key_env) else "environment",
-            "protocol": llm.protocol if llm else os.environ.get("XHS_LLM_PROTOCOL"),
-            "base_url": llm.base_url if llm else os.environ.get("XHS_LLM_BASE_URL"),
-            "trust_env": llm.trust_env if llm else False}
+            "protocol": llm.protocol if llm else os.environ.get(prefix + "PROTOCOL"),
+            "base_url": llm.base_url if llm else os.environ.get(prefix + "BASE_URL"),
+            "trust_env": llm.trust_env if llm else os.environ.get(prefix + "TRUST_ENV", "false").lower() in {"true", "1", "yes"},
+            "max_tokens": llm.max_tokens if llm else int(os.environ.get(prefix + "MAX_TOKENS", 4096)),
+            "timeout": llm.timeout if llm else float(os.environ.get(prefix + "TIMEOUT", 120))}
+        return public_settings(public, bool(llm and llm.api_key))
+
+    def public_settings(public: dict, stored: bool) -> dict:
         preset = list_provider_presets().get(public["provider"])
-        stored = repo.has_api_key(credential_scope(public)) or bool(saved is None and llm and llm.api_key)
         configured = stored if public["credential_source"] == "api_key" else bool(os.environ.get(public["api_key_env"]))
         return {**public, "api_key_configured": stored,
                 "credential_configured": configured or bool(preset and not preset.auth_required),
                 "model_configured": bool(public["model"])}
 
-    @app.put("/api/settings/ideation")
-    def save_settings(body: ModelSettingsUpdate):
+    @app.get("/api/settings/{role}")
+    def settings(role: ModelRole):
+        saved = repo.setting(role)
+        initial = startup_settings(role)
+        llm = getattr(base_config, f"{role}_llm")
+        prefix = "XHS_LLM_" if role == "ideation" else f"XHS_{role.upper()}_"
+        env_fields = ("PROVIDER", "MODEL", "PROTOCOL", "BASE_URL", "API_KEY", "API_KEY_ENV", "MAX_TOKENS",
+                      "TIMEOUT", "TRUST_ENV", "TEMPERATURE", "TOKEN_PARAMETER", "AUTH_MODE", "AUTH_REQUIRED")
+        origin = ("file" if llm is not None and base_config.llm_config_path else "provided" if llm is not None else
+                  "environment" if any(prefix + name in os.environ for name in env_fields) else "defaults")
+        public = (public_settings(ModelSettings.model_validate(saved).model_dump(),
+                                  repo.has_api_key(credential_scope(saved, role))) if saved is not None else initial)
+        return {**public, "config_source": "web" if saved is not None else "startup",
+                "startup": {"origin": origin, "path": base_config.llm_config_path if origin == "file" else None,
+                            "values": initial}}
+
+    @app.delete("/api/settings/{role}")
+    def follow_startup_settings(role: ModelRole):
+        repo.delete_setting(role)
+        return settings(role)
+
+    @app.put("/api/settings/{role}")
+    def save_settings(role: ModelRole, body: ModelSettingsUpdate):
+        if body.backend == "rules" and role != "review":
+            raise ValueError("只有审核 Agent 可以使用规则审核模式")
         metadata = body.model_dump(exclude={"api_key", "clear_api_key"})
-        scope = credential_scope(metadata)
+        if role != "ideation" and "api_key_env" not in body.model_fields_set:
+            metadata["api_key_env"] = f"XHS_{role.upper()}_API_KEY"
+        scope = credential_scope(metadata, role)
         key = body.api_key
         # 首次在 Web 保存来自启动文件的配置时，保留同一接口已有的显式密钥。
-        initial = base_config.ideation_llm
-        if (key is None and not body.clear_api_key and repo.setting() is None and initial and initial.api_key
-                and scope == credential_scope(initial.model_dump())):
+        initial = getattr(base_config, f"{role}_llm")
+        if (key is None and not body.clear_api_key and repo.setting(role) is None and initial and initial.api_key
+                and scope == credential_scope(initial.model_dump(), role)):
             key = initial.api_key
-        repo.save_setting(metadata, scope=scope, api_key=key, clear_api_key=body.clear_api_key)
-        return settings()
+        repo.save_setting(metadata, role=role, scope=scope, api_key=key, clear_api_key=body.clear_api_key)
+        return settings(role)
+
+    @app.get("/api/settings")
+    def all_model_settings():
+        return [{"role": role, **settings(role)} for role in MODEL_ROLES]
+
+    @app.post("/api/settings/{role}/copy")
+    def copy_model_settings(role: ModelRole, body: CopyModelSettings):
+        if role == body.source_role:
+            raise ValueError("请选择其他 Agent 的已配置模型")
+        source = settings(body.source_role)
+        if source["backend"] != "llm" or not source["model_configured"] or not source["credential_configured"]:
+            raise ValueError("来源 Agent 需要先保存完整的真实模型配置和凭据")
+        metadata = ModelSettings.model_validate({key: source[key] for key in ModelSettings.model_fields}).model_dump()
+        key = None
+        if metadata["credential_source"] == "api_key":
+            source_scope = credential_scope(metadata, body.source_role)
+            key = repo.api_key(source_scope) if source["config_source"] == "web" else None
+            initial = getattr(base_config, f"{body.source_role}_llm")
+            if key is None and repo.setting(body.source_role) is None and initial:
+                key = initial.api_key
+            preset = list_provider_presets().get(metadata["provider"])
+            if key is None and not (preset and not preset.auth_required):
+                raise ValueError("来源模型没有可复制的密钥，请重新保存来源配置")
+        # 目标角色使用独立凭据副本；之后修改/清除任何一方均不会影响另一方。
+        repo.save_setting(metadata, role=role, scope=credential_scope(metadata, role), api_key=key,
+                          clear_api_key=key is None)
+        return settings(role)
+
+    @app.get("/api/agents")
+    def agents():
+        with service() as svc:
+            return {"agents": [definition.model_dump(mode="json")
+                               for definition in svc.agent_registry.catalog(delegatable_only=False)]}
 
     @app.get("/api/skills")
     def skills(role: str = "ideation"):

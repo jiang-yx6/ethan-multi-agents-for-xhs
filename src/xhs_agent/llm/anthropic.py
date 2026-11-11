@@ -49,6 +49,10 @@ class AnthropicProvider(HTTPProvider):
                     raise LLMConfigurationError("修改 Anthropic 历史文本或工具调用后，请清除 anthropic_blocks")
             else:
                 content = [{"type": "text", "text": message.content}] if message.content else []
+                for image in message.images:
+                    header, data = image.split(",", 1)
+                    content.append({"type": "image", "source": {
+                        "type": "base64", "media_type": header[5:].split(";", 1)[0], "data": data}})
                 content += [{"type": "tool_use", "id": call.id, "name": call.name, "input": call.arguments}
                             for call in message.tool_calls]
             if not content:

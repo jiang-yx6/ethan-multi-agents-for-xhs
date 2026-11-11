@@ -1,18 +1,9 @@
-"""研究 Agent 内部模型：问题拆解与网络检索。"""
+"""研究 Agent 的网络检索模型与 Provider 接口。"""
 from __future__ import annotations
 
 from typing import Protocol
 
 from pydantic import BaseModel
-
-
-class ResearchQuestion(BaseModel):
-    """把选题拆解成的一个待调研问题。"""
-
-    question: str
-    purpose: str
-    queries: list[str]
-    required: bool = True
 
 
 class SearchHit(BaseModel):

@@ -27,6 +27,9 @@ class OpenAIProvider(HTTPProvider):
             if message.anthropic_blocks:
                 raise LLMConfigurationError("包含 Anthropic 原始内容的历史不能直接切换到 OpenAI 协议")
             item = {"role": message.role, "content": message.content}
+            if message.images:
+                item["content"] = [{"type": "text", "text": message.content},
+                                   *({"type": "image_url", "image_url": {"url": image}} for image in message.images)]
             if message.role == "assistant":
                 if message.tool_calls:
                     item["tool_calls"] = [{

@@ -2,36 +2,31 @@
 
 根据**用户本次需求、账号画像和可选热点信息**生成内容，支持攻略、观点、生活记录、测评、科普等类型。用户目标优先，热点仅作为相关选题的参考。
 
-基于 Python + uv + LangGraph + Pydantic。**选题默认使用真实模型**：通过统一 LLM Provider 调用配置的厂商，按需加载授权技能，并校验结构化选题结果。资料整理和创作仍采用 Mock，审核采用基本规则，默认发布只写本地模拟记录；小红书真实图文发布可单独启用。实时热点抓取和实际图片生成尚未接入。离线演示可显式选择 `--mock-ideation`。
+基于 Python + uv + LangGraph + Pydantic。**新任务默认由真实模型主 Agent 动态委派**：根据执行结果选择专业 Agent、询问用户或交付内容；选题也使用真实模型并按需读取授权技能。五个 Agent 都可在前端单独配置模型，支持从其他 Agent 已保存的模型一键应用接口和凭据。资料整理和创作默认采用 Mock，审核默认采用规则，可分别切换到模型实现；发布默认只写本地模拟记录，小红书真实图文发布可单独启用。实时热点抓取和实际图片生成尚未接入。
 
 Mock 修改会保留上一版正文、记录并展示待落实的修改意见，不代表已完成语义改写。默认审核只检查基本结构、证据来源对应关系与占位情况，风格、事实真实性、画像禁区和是否编造经历仍需人工检查或接入语义审核模型。
 
 ## Agent 与流程
 
-四个 Agent 分别负责选题、资料整理、创作和质量审核；热点查询、画像加载和发布是独立工具/适配器。每个 Agent 独立编译为子图，父图负责人工决策和路由。
+父 Agent 作为 LangGraph 决策节点，四个专业子 Agent 负责选题、资料整理、创作和质量审核。结构化决策作为条件边，执行结果和用户回复都会回到父 Agent。`graph.py` 是唯一图入口。
 
 ```text
-需求 + 画像快照 + 可选热点
-           ↓
-选题 Agent → 人工选择
-           ↓
-资料整理 Agent（needs_research=false 时只整理用户素材）
-           ↓
-创作 Agent（修改时接收上一版草稿和反馈）
-           ↓
-质量审核 Agent
-  ├─ 有错误且未达返工上限 → 资料整理 / 创作
-  └─ 通过或达到上限 → 人工审核（展示未解决问题）
-                         ├─ 修改 → 创作
-                         ├─ 取消
-                         └─ 批准 → 导出 / 发布确认
+需求 + 画像 → 主 Agent 决策
+                 ├─ delegate → 目标专业 Agent → 结果回传 → 主 Agent
+                 ├─ ask_user → 暂停等待用户回复 → 主 Agent
+                 └─ finish → 草稿交付 / 结果摘要
+                               ↓ 有草稿时
+                            人工审核
+                              ├─ 修改 → 主 Agent
+                              ├─ 取消
+                              └─ 批准 → 导出 / 发布确认
 ```
 
-自动返工默认最多两轮，可通过 `WorkflowConfig(max_auto_revisions=...)` 设置。警告不触发自动返工，仍向人工展示。自动审核不会批准草稿或发布；达到上限后的人工审核可以决定继续修改、取消或批准。
+默认每次交互最多 20 轮决策，可通过 `AgentConfig(team_max_rounds=...)` 设置。交付草稿前必须检查当前版本，父 Agent 和自动审核都不能批准或发布。旧固定流程已移除，旧检查点只能查看已有数据；请新建父子 Agent 任务。
 
 ## 主 Agent 协作协议
 
-已建立统一委派任务、执行结果、主 Agent 三类决策，以及限制角色、技能和工具范围的 Agent 注册表。通过 `TaskService.agent_registry` 查看当前组装的角色。当前仍运行上面的既有流程；主 Agent 模型和动态团队图将在后续接入。模型字段、协议示例、权限边界与迁移范围见 [Agent 协作协议](docs/agent-collaboration.md)。
+统一委派任务、执行结果、主 Agent 三类决策与 Agent 注册表已接入团队图。通过 `TaskService.agent_registry` 查看当前组装的角色；父 Agent 使用独立的 `supervisor` 模型配置，选题使用 `ideation`，两个角色的模型、密钥与运行模式分别设置。回复问题使用 `xhs answer TASK_ID --text "补充信息"`，查看记录使用 `xhs collaboration TASK_ID`。模型字段、API、权限边界和恢复机制见 [Agent 协作协议](docs/agent-collaboration.md)。
 
 ## 外部技能库
 
@@ -43,7 +38,7 @@ uv run xhs skills show ideation skill-trending-topics
 uv run xhs skills list --agent review
 ```
 
-Agent 通过 `agent.skills.catalog()/load()/read_resource()` 按需读取，使用 `agent.skill_prompt()` 构建技能目录上下文。默认 Agent 已由 TaskService 绑定对应角色。选题模型通过 LangGraph 的模型/工具循环调用 `load_skill`、`read_skill_resource`；其余 Mock 阶段仍使用既有逻辑。技能声明不能授予额外权限，库不会自动执行第三方脚本。完整配置、导入及模型接入方式见 [技能库说明](skills/README.md)。
+Agent 通过 `agent.skills.catalog()/load()/read_resource()` 按需读取，使用 `agent.skill_prompt()` 构建技能目录上下文。默认 Agent 已由 TaskService 绑定对应角色。专业模型共用通用模型/工具循环；配置后，调研可自主检索并读取正文，创作可生成或修改图片，审核可调用规则检查。技能声明不能授予额外权限，库不会自动执行第三方脚本。配置见 [专业 Agent 执行能力](docs/specialist-execution.md)，技能导入见 [技能库说明](skills/README.md)。
 
 ## 安装与使用
 
@@ -53,17 +48,18 @@ uv run pytest
 uv run xhs --help
 
 # 不配置密钥的离线演示
-uv run xhs --mock-ideation create "周末出游"
+uv run xhs --mock-ideation --mock-supervisor create "周末出游"
 ```
 
-默认真实选题需要先配置模型。在 [模型配置示例](examples/llm-config.json) 中填写 `ideation.model` 的实际模型 ID，并在 PowerShell 中设置对应密钥：
+在 [模型配置示例](examples/llm-config.json) 中分别填写 `supervisor.model` 与 `ideation.model` 的实际模型 ID，并设置两个角色明确指定的密钥：
 
 ```powershell
 $env:DEEPSEEK_API_KEY = "填写你的密钥"
+$env:XHS_SUPERVISOR_API_KEY = "填写父 Agent 的密钥"
 uv run xhs --llm-config examples/llm-config.json create "周末出游"
 ```
 
-也可以用 `XHS_LLM_PROVIDER`、`XHS_LLM_MODEL` 和厂商密钥环境变量配置默认选题模型，然后直接使用：
+不使用文件时，用 `XHS_SUPERVISOR_PROVIDER/MODEL/API_KEY` 配置父 Agent，用 `XHS_LLM_PROVIDER/MODEL` 和密钥变量配置选题 Agent，然后直接使用：
 
 ```bash
 uv run xhs create "周末出游"
@@ -80,7 +76,9 @@ uv run xhs create "城市漫步" --profile examples/profile.json --trends exampl
 将下面的 `TASK_ID` 替换为创建任务时返回的实际 ID：
 
 ```bash
-uv run xhs select TASK_ID 0
+uv run xhs collaboration TASK_ID
+# 父 Agent 提问时回复
+uv run xhs answer TASK_ID --text "我希望采用周末路线方向"
 uv run xhs status TASK_ID
 uv run xhs modify TASK_ID -c "保留原有结构，补充交通方式"
 uv run xhs approve TASK_ID
@@ -154,7 +152,7 @@ data/outputs/<task_id>/v001/
 `agents/base.py` 定义四个 Agent 和发布器的协议，通过构造参数注入：
 
 ```python
-from xhs_agent.config import WorkflowConfig
+from xhs_agent.config import AgentConfig
 from xhs_agent.models import ContentRequest, UserProfile
 from xhs_agent.service import TaskService
 
@@ -162,7 +160,7 @@ service = TaskService(
     data_dir="data",
     # ideation_agent=..., research_agent=..., creation_agent=...,
     # review_agent=..., trend_provider=..., publisher=...,
-    config=WorkflowConfig(max_auto_revisions=2),
+    config=AgentConfig(team_max_rounds=20),
 )
 try:
     task = service.create_task(
@@ -189,6 +187,16 @@ finally:
 
 ## Web 创作工作台
 
+任务流程自动追加到数据目录下的 `logs/agents-YYYY-MM-DD.jsonl`（默认 `data/logs/`）。日志记录节点起止、父 Agent 决策、委派要求和选题序号、工具调用、人工暂停/恢复、耗时与异常，并按 `task_id`、`run_id`、`delegation_id` 关联。查看方法与字段说明见 [流程日志](docs/flow-logging.md)。
+
+CLI 和 Web 工厂启动时通过 `load_dotenv(override=False)` 读取项目根目录 `.env`；终端已有环境变量优先。`.env` 已被 Git 忽略，模板见 [.env.example](.env.example)。填写 `TAVILY_API_KEY`、`XHS_IMAGE_API_KEY` 等实际密钥后，文件中的 `XHS_LLM_CONFIG` 和 `XHS_EXECUTION_CONFIG` 会自动指定两个 JSON，启动命令可简化为：
+
+```powershell
+uv run --extra web --extra browser xhs web
+```
+
+修改 `.env` 后重启服务生效；显式命令行参数优先于 `.env` 中的路径。JSON 中直接填写的密钥和网页独立模型配置仍遵循原有优先级。
+
 第一版已实现 React + TypeScript 前端和 FastAPI 后端，连接真实任务、后台作业、画像、模型设置、媒体、账号和发布回执。启动时不会导入演示数据。安装和运行：
 
 ```powershell
@@ -201,11 +209,13 @@ $env:XHS_BROWSER_CHANNEL = "chrome"
 uv run --extra web --extra browser xhs web
 ```
 
-访问 `http://127.0.0.1:8000`。在“技能与模型”填写实际模型 ID 和 API Key 即可配置真实选题，密钥在本机加密保存，后续执行无需重启服务。也保留环境变量方式。本地离线验收可用 `xhs --data-dir data/web-e2e --mock-ideation web --port 8011`。已保存的 Web 模型设置会优先用于后续任务。完整功能、数据目录和开发方式见 [Web 使用说明](web/README.md)。
+访问 `http://127.0.0.1:8000`，在“技能与模型”切换父 Agent、选题、调研、创作和审核，分别保存接口。其他 Agent 可在“复用已配置模型”下拉框中选择已保存模型并点击“一键应用”；凭据在服务端复制并独立加密，浏览器不会收到密钥。配置检索服务和真实调研模型后可自主搜索及读取正文。父 Agent 提问时可直接在任务页面查看问题、填写回复并继续协作。完整功能见 [Web 使用说明](web/README.md)。
+
+每个 Agent 可明确选择“跟随启动配置”或“网页独立配置”，页面显示当前生效来源及启动文件路径。网页提供最大输出 Token 和请求超时；网页覆盖优先于同角色启动文件，保存不会写回 JSON。来源规则、切换方式和 `length` 截断处理见 [模型配置说明](docs/model-configuration.md)。
 
 ## 代码结构
 
-交互设计见 [前端设计方案](docs/web-frontend.md)，[独立原型](web/prototype/index.html) 保留用于设计参考；正式界面位于 `web/src/`，使用真实 Python API。
+交互设计见 [前端设计方案](docs/web-frontend.md)；正式界面位于 `web/src/`，使用真实 Python API。
 
 ```text
 src/xhs_agent/

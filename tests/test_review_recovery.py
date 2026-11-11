@@ -5,8 +5,7 @@ def test_review_survives_restart_and_approve(service_factory):
     svc = service_factory()
     task = svc.create_task("早C晚A护肤入门")
     task_id = task.task_id
-    assert task.status == "ideating"
-    svc.select_idea(task_id, 0)
+    assert task.status == "pending_review"
     assert svc.status(task_id).status == "pending_review"
     assert svc.status(task_id).current_version == 1
     svc.close()

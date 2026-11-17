@@ -25,6 +25,7 @@ class LLMConfig(BaseModel):
     timeout: float = Field(default=120, gt=0)
     max_tokens: int = Field(default=4096, gt=0)
     temperature: float | None = Field(default=None, ge=0, le=2)
+    reasoning_effort: Literal["none", "low", "high", "max"] | None = None
     token_parameter: Literal["max_tokens", "max_completion_tokens"] | None = None
     anthropic_version: str = "2023-06-01"
     trust_env: bool = False
@@ -63,7 +64,8 @@ class LLMConfig(BaseModel):
         mapping = {
             "PROVIDER": "provider", "MODEL": "model", "PROTOCOL": "protocol", "BASE_URL": "base_url",
             "API_KEY_ENV": "api_key_env", "TIMEOUT": "timeout", "MAX_TOKENS": "max_tokens",
-            "TEMPERATURE": "temperature", "TOKEN_PARAMETER": "token_parameter", "TRUST_ENV": "trust_env",
+            "TEMPERATURE": "temperature", "REASONING_EFFORT": "reasoning_effort",
+            "TOKEN_PARAMETER": "token_parameter", "TRUST_ENV": "trust_env",
             "AUTH_REQUIRED": "auth_required", "AUTH_MODE": "auth_mode", "ANTHROPIC_VERSION": "anthropic_version",
         }
         values = {field: environment[prefix + name] for name, field in mapping.items() if prefix + name in environment}

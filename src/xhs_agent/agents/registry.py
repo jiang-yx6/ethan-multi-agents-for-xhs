@@ -5,13 +5,14 @@ from collections.abc import Mapping
 
 from ..models.base import AgentRole
 from ..models.collaboration import (
-    AgentDefinition, ArtifactReference, DelegateDecision, DelegationResult, DelegationTask,
+    AgentDefinition, DelegateDecision, DelegationResult, DelegationTask,
     FinishDecision, SupervisorContext, SupervisorDecision,
 )
 from ..skills import AgentSkills, SkillLibrary
-from ..execution import ExecutionConfig, ROLE_TOOLS
-from .base import SKILL_READ_TOOLS, SkillEnabledAgent
-from .supervisor import SUPERVISOR_DECISION_ADAPTER, SUPERVISOR_RESPONSIBILITIES
+from ..execution import ExecutionConfig, ROLE_TOOLS, SKILL_TOOLS
+from .base import SkillEnabledAgent
+from .supervisor import SUPERVISOR_RESPONSIBILITIES
+from .decisions import parse_supervisor_decision
 
 
 class AgentRegistry:
@@ -78,8 +79,7 @@ class AgentRegistry:
 
     def validate_decision(self, value: str | dict | SupervisorDecision,
                           context: SupervisorContext) -> SupervisorDecision:
-        decision = (SUPERVISOR_DECISION_ADAPTER.validate_json(value) if isinstance(value, str)
-                    else SUPERVISOR_DECISION_ADAPTER.validate_python(value))
+        decision = parse_supervisor_decision(value, context)
         if isinstance(decision, DelegateDecision):
             task = decision.task
             self.validate_delegation(task)
@@ -96,20 +96,31 @@ class AgentRegistry:
                         and len(context.user_messages) <= previous.user_message_count
                         and task.model_dump(exclude={"delegation_id"}) == previous.task.model_dump(exclude={"delegation_id"})):
                     raise ValueError("上一委派尚未完成；需要调整要求、输入或完成条件，或向用户提问，不能原样重复委派")
-            self._validate_references(task.input_artifacts, context)
+            if task.target_agent == "review":
+                draft = next((ref for ref in task.input_artifacts if ref.kind == "draft"), None)
+                reviewed = next((ref for ref in context.artifacts
+                                 if ref.kind == "review" and draft is not None and ref.version == draft.version), None)
+                if reviewed is not None:
+                    raise ValueError(f"草稿 v{draft.version} 已完成审核；必须先生成新草稿版本，不能重复审核")
+            ideas = next((ref for ref in context.artifacts if ref.kind == "ideas"), None)
+            if context.idea_feedback and task.target_agent != "ideation":
+                raise ValueError("用户要求重新生成选题，需要先委派 ideation，并落实 idea_feedback")
+            if ideas and task.target_agent in {"research", "creation"}:
+                selection = context.idea_selection
+                if selection is None or selection.candidates != ideas:
+                    raise ValueError("候选选题尚未由用户确认，不能继续调研或创作")
+                if task.idea_index is not None and task.idea_index != selection.idea_index:
+                    raise ValueError("委派选题序号必须与用户确认一致")
+                if not (selection.idea in task.input_artifacts or
+                        (ideas in task.input_artifacts and task.idea_index == selection.idea_index)):
+                    raise ValueError("调研或创作必须引用用户确认的 idea，或候选集及已确认的 idea_index")
         elif isinstance(decision, FinishDecision):
-            self._validate_references(decision.artifacts, context)
+            if context.idea_feedback:
+                raise ValueError("用户要求重新生成选题，尚不能结束")
+            draft = next((ref for ref in context.artifacts if ref.kind == "draft"), None)
+            if context.idea_selection and draft and draft.version <= context.idea_selection.draft_version_at_selection:
+                raise ValueError("用户已重新确认选题，必须围绕选定方向交付新草稿并重新审核")
         return decision
-
-    @staticmethod
-    def _validate_references(refs: tuple[ArtifactReference, ...], context: SupervisorContext) -> None:
-        available = {(ref.artifact_id, ref.version): ref for ref in context.artifacts}
-        keys = [(ref.artifact_id, ref.version) for ref in refs]
-        if len(keys) != len(set(keys)):
-            raise ValueError("产物引用不能重复")
-        if any(ref.task_id != context.task_id or available.get((ref.artifact_id, ref.version)) != ref
-               for ref in refs):
-            raise ValueError("决策只能引用当前上下文已有的产物和版本")
 
 
 def build_agent_registry(skill_library: SkillLibrary,
@@ -131,7 +142,7 @@ def build_agent_registry(skill_library: SkillLibrary,
     for role, (description, responsibilities) in descriptions.items():
         specialist = role not in {"supervisor", "publishing"}
         settings = (execution or ExecutionConfig()).for_role(role)
-        available = getattr(agents.get(role), "available_tools", SKILL_READ_TOOLS) if specialist else ()
+        available = getattr(agents.get(role), "available_tools", SKILL_TOOLS) if specialist else ()
         granted = tuple(skill.id for skill in skill_library.for_agent(role).catalog())
         tools = settings.tools if specialist and settings.tools is not None else available
         if not set(tools).issubset(available):

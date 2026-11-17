@@ -264,6 +264,8 @@ export default function App() {
           "drafts",
           "changes",
           "answer",
+          "select_idea",
+          "regenerate_ideas",
           "message",
           "approve",
           "cancel",

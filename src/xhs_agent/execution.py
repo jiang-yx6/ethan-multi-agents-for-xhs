@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, f
 
 from .llm import LLMConfig, LLMConfigurationError
 from .models.base import SpecialistRole
+from .memory import ContextPolicy
 
 SKILL_TOOLS = ("load_skill", "read_skill_resource")
 ROLE_TOOLS = {
@@ -27,9 +28,9 @@ class RoleExecution(ExecutionModel):
     prompt: str = ""
     skill_ids: tuple[str, ...] | None = None
     tools: tuple[str, ...] | None = None
-    max_model_calls: int = Field(default=8, ge=1, le=20)
-    max_tool_calls: int = Field(default=12, ge=0, le=40)
-    max_output_retries: int = Field(default=2, ge=0, le=3)
+    max_model_calls: int | None = Field(default=None, ge=1)
+    max_tool_calls: int | None = Field(default=None, ge=0)
+    max_output_retries: int | None = Field(default=None, ge=0)
     supports_vision: bool = False
 
     def runtime_options(self):
@@ -66,10 +67,12 @@ class SearchSettings(APISettings):
     provider: Literal["tavily"] = "tavily"
     base_url: str = "https://api.tavily.com"
     api_key_env: str = Field(default="TAVILY_API_KEY", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    max_search_calls: int = Field(default=3, ge=1, le=20)
+    max_fetch_calls: int = Field(default=5, ge=1, le=50)
 
 
 class ImageSettings(APISettings):
-    provider: Literal["openai"] = "openai"
+    provider: Literal["openai", "dashscope"] = "openai"
     base_url: str = "https://api.openai.com/v1"
     api_key_env: str = Field(default="XHS_IMAGE_API_KEY", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     model: str = Field(min_length=1)
@@ -79,6 +82,7 @@ class ImageSettings(APISettings):
 
 
 class ExecutionConfig(ExecutionModel):
+    context: ContextPolicy = Field(default_factory=ContextPolicy)
     roles: dict[SpecialistRole, RoleExecution] = Field(default_factory=dict)
     search: SearchSettings | None = None
     images: ImageSettings | None = None

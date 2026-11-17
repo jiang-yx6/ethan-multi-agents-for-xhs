@@ -16,7 +16,7 @@ from xhs_agent.platforms import AccountIdentity, PublishReceipt
 from xhs_agent.platforms.xiaohongshu import XiaohongshuConnector
 from xhs_agent.service import TaskService
 from xhs_agent.web import create_app
-from xhs_agent.web.app import credential_scope
+from xhs_agent.web.settings import credential_scope
 from xhs_agent.web.repository import WebRepository
 
 
@@ -79,14 +79,17 @@ def action(client, task_id, kind, **extra):
     detail = client.get(f"/api/tasks/{task_id}").json()
     task = detail["task"]
     pause = ({"interrupt_id": detail["workflow"]["interrupts"][0]["id"] if detail["workflow"]["interrupts"] else "unavailable"}
-             if kind in {"answer", "drafts", "changes", "approve", "cancel", "publish"} else {})
+             if kind in {"answer", "select_idea", "regenerate_ideas", "drafts", "changes", "approve", "cancel", "publish"} else {})
+    if kind in {"select_idea", "regenerate_ideas"}:
+        ref = detail["workflow"]["interrupts"][0]["value"]["ideas"]
+        pause.update(ideas_artifact_id=ref["artifact_id"], ideas_version=ref["version"])
     return client.post(f"/api/tasks/{task_id}/{kind}", json={"request_id": str(uuid.uuid4()),
                         "expected_version": task["current_version"], **pause, **extra})
 
 
 def review_task(client):
     task_id, _ = new_task(client)
-    assert wait(client, action(client, task_id, "answer", answer="0"))["status"] == "succeeded"
+    assert wait(client, action(client, task_id, "select_idea", idea_index=0))["status"] == "succeeded"
     return task_id
 
 
@@ -317,7 +320,9 @@ def test_restart_restores_safe_approval_gate_without_replaying_job(tmp_path):
     root = tmp_path / "restart"
     service = TaskService(root, config=AgentConfig(ideation_backend="mock", supervisor_backend="mock"))
     task = service.create_task(ContentRequest(goal="重启恢复"))
-    service.answer(task.task_id, "0")
+    pause = service.workflow(task.task_id).interrupts[0]
+    service.select_idea(task.task_id, 0, interrupt_id=pause.id,
+        ideas_artifact_id=pause.value["ideas"]["artifact_id"], ideas_version=pause.value["ideas"]["version"])
     service.approve(task.task_id)
     service.close()
     repo = WebRepository(root)
@@ -341,10 +346,10 @@ def test_workflow_exposes_real_gates_and_releases_job_between_pauses(web):
     detail = client.get(f"/api/tasks/{task_id}").json()
     first = detail["workflow"]
     assert first["thread_id"] == task_id and first["checkpoint_id"]
-    assert first["status"] == "waiting_input" and first["next_nodes"] == ["ask_user"]
-    assert detail["job"]["status"] == "succeeded" and detail["allowed_actions"] == ["answer", "cancel"]
-    assert first["interrupts"][0]["actions"] == ["answer", "cancel"]
-    assert wait(client, action(client, task_id, "answer", answer="0"))["status"] == "succeeded"
+    assert first["status"] == "waiting_input" and first["next_nodes"] == ["select_idea"]
+    assert detail["job"]["status"] == "succeeded" and detail["allowed_actions"] == ["select_idea", "regenerate_ideas", "cancel"]
+    assert first["interrupts"][0]["actions"] == ["select_idea", "regenerate_ideas", "cancel"]
+    assert wait(client, action(client, task_id, "select_idea", idea_index=0))["status"] == "succeeded"
     detail = client.get(f"/api/tasks/{task_id}").json()
     assert detail["workflow"]["next_nodes"] == ["review"]
     assert detail["workflow"]["interrupts"][0]["id"] != first["interrupts"][0]["id"]
@@ -438,7 +443,7 @@ def test_graph_node_failure_is_retryable_and_returns_to_human_review(tmp_path):
 
     with TestClient(create_app(root, config=AgentConfig(ideation_backend="mock", supervisor_backend="mock"), service_factory=factory)) as client:
         task_id, _ = new_task(client, needs_research=True)
-        assert wait(client, action(client, task_id, "answer", answer="0"))["status"] == "failed"
+        assert wait(client, action(client, task_id, "select_idea", idea_index=0))["status"] == "failed"
         failed = client.get(f"/api/tasks/{task_id}").json()
         assert failed["workflow"]["status"] == "failed" and failed["workflow"]["next_nodes"] == ["execute_agent"]
         assert failed["allowed_actions"] == ["retry"] and failed["workflow"]["interrupts"] == []

@@ -17,6 +17,7 @@ from playwright.sync_api import expect, sync_playwright
 from xhs_agent.config import AgentConfig
 from xhs_agent.llm import LLMConfig
 from xhs_agent.agents.creation import MockCreationAgent
+from xhs_agent.agents.supervisor import MockSupervisorAgent
 from xhs_agent.service import TaskService
 from xhs_agent.web import create_app
 
@@ -43,6 +44,76 @@ def route_app(route, client, dist):
         route.fulfill(status=404, body="Not found")
         return
     route.fulfill(path=str(path), content_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+
+
+def test_candidates_require_explicit_selection_and_can_regenerate_in_browser(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    dist = root / "web" / "dist"
+    if not (dist / "index.html").exists():
+        pytest.skip("请先构建前端")
+    app = create_app(tmp_path, config=AgentConfig(supervisor_backend="mock", ideation_backend="mock"))
+    with TestClient(app, base_url="http://localhost:8123") as client, sync_playwright() as playwright:
+        from test_team_web import wait
+        job = wait(client, client.post("/api/tasks", json={"request_id": str(uuid.uuid4()),
+                   "request": {"goal": "上海冬天的日常感受", "needs_research": False}}))
+        url = f"/api/tasks/{job['task_id']}"
+        first = client.get(url).json()["workflow"]["interrupts"][0]
+        browser = playwright.chromium.launch(channel="chrome", headless=True)
+        try:
+            page = browser.new_page(viewport={"width": 1440, "height": 1100}, reduced_motion="reduce")
+            page.set_default_timeout(12000)
+            submitted, errors = [], []
+            page.on("pageerror", lambda error: errors.append(str(error)))
+
+            def route_request(route):
+                if urlsplit(route.request.url).path == url + "/select_idea":
+                    payload = json.loads(route.request.post_data)
+                    submitted.append(payload)
+                    if len(submitted) == 1:
+                        response = client.post(url + "/select_idea", json={**payload, "interrupt_id": first["id"]})
+                        assert response.status_code == 409
+                        route.fulfill(status=409, body=response.content, content_type="application/json")
+                        return
+                route_app(route, client, dist)
+
+            page.route("**/*", route_request)
+            page.goto(f"http://localhost:8123/#/workspace?task={job['task_id']}", wait_until="networkidle")
+            panel = page.get_by_role("region", name="人工选择选题")
+            expect(panel.get_by_role("heading", name="先选一题，再继续创作")).to_be_in_viewport()
+            expect(panel.get_by_role("radio")).to_have_count(3)
+            confirm = panel.get_by_role("button", name="确认选题并继续")
+            expect(confirm).to_be_disabled()
+            expect(page.get_by_label("给父 Agent 发消息", exact=True)).to_be_disabled()
+            expect(page.get_by_label("步骤结果与进度", exact=True)).to_contain_text("等待你确认选题")
+            panel.get_by_label("想换个方向？", exact=True).fill("更贴近刚到上海的日常体验")
+            panel.get_by_role("button", name="按要求重新生成").click()
+            expect(panel.get_by_label("想换个方向？", exact=True)).to_have_value("")
+            expect(panel.get_by_role("button", name="确认选题并继续")).to_be_disabled()
+            # 刷新后仍停在新一批候选上，尚未生成草稿。
+            page.reload(wait_until="networkidle")
+            current = client.get(url).json()
+            assert current["task"]["current_version"] == 0
+            second = current["workflow"]["interrupts"][0]
+            assert second["id"] != first["id"]
+            panel.get_by_role("radio").nth(1).check()
+            output = root / "data" / "ui-review"
+            output.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(output / "idea-selection-desktop.png"), full_page=True)
+            page.set_viewport_size({"width": 390, "height": 844})
+            assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+            page.screenshot(path=str(output / "idea-selection-mobile.png"), full_page=True)
+            confirm.click()
+            expect(panel.get_by_role("radio").nth(1)).to_be_checked()
+            expect(confirm).to_be_enabled()
+            confirm.click()
+            expect(page.locator(".current-delivery")).to_contain_text("草稿 v1")
+            assert client.get(url).json()["task"]["topic"] == current["ideas"][1]["title"]
+            assert len(submitted) == 2 and submitted[-1]["idea_index"] == 1
+            assert submitted[-1]["ideas_artifact_id"] == second["value"]["ideas"]["artifact_id"]
+            assert submitted[-1]["interrupt_id"] == second["id"]
+            assert errors == []
+        finally:
+            browser.close()
 
 
 def test_agent_model_form_copy_and_responsive_layout(tmp_path):
@@ -143,12 +214,19 @@ def test_parent_question_can_be_answered_in_browser_and_rejects_stale_pause(tmp_
                 raise RuntimeError("测试未释放创作任务")
             return super().create(*args, **kwargs)
 
+    class QuestionSupervisor(MockSupervisorAgent):
+        def decide(self, context):
+            if not context.user_messages:
+                return {"action": "ask_user", "reason": "需要真实素材", "question": "你在上海有哪些实际生活感受？",
+                        "missing_information": ["真实生活素材"]}
+            return super().decide(context)
+
     app = create_app(tmp_path, config=AgentConfig(supervisor_backend="mock", ideation_backend="mock"),
                      service_factory=lambda config, event: TaskService(tmp_path, config=config, on_event=event,
-                                                                       creation_agent=PausedCreation()))
+                                                                       creation_agent=PausedCreation(), supervisor_agent=QuestionSupervisor()))
     with TestClient(app, base_url="http://localhost:8123") as client, sync_playwright() as playwright:
         response = client.post("/api/tasks", json={"request_id": str(uuid.uuid4()),
-                               "request": {"goal": "整理上海冬天的生活体验", "needs_research": False}})
+                               "request": {"goal": "整理上海冬天的生活体验", "topic": "上海冬天", "needs_research": False}})
         assert response.status_code == 202
         job_id, task_id = response.json()["job_id"], response.json()["task_id"]
         deadline = time.monotonic() + 15
@@ -183,7 +261,7 @@ def test_parent_question_can_be_answered_in_browser_and_rejects_stale_pause(tmp_
             page.goto(f"http://localhost:8123/#/workspace?task={task_id}", wait_until="networkidle")
             expect(page.get_by_role("heading", name="与父 Agent 对话", exact=True)).to_be_visible()
             expect(page.get_by_role("log", name="对话记录")).to_contain_text(pause["value"]["question"])
-            expect(page.get_by_label("步骤结果与进度", exact=True)).to_contain_text("选题 Agent")
+            expect(page.get_by_label("步骤结果与进度", exact=True)).to_contain_text("确认内容方向")
             expect(page.get_by_text("检查模型配置后，可继续恢复这次任务。", exact=True)).to_have_count(0)
             page.reload(wait_until="networkidle")
             submit = page.get_by_role("button", name="发送消息", exact=True)
@@ -219,6 +297,8 @@ def test_parent_question_can_be_answered_in_browser_and_rejects_stale_pause(tmp_
             release.set()
             page.get_by_role("button", name="打开草稿与审核", exact=True).click()
             expect(page.get_by_label("正文", exact=True)).to_be_visible()
+            # 草稿落库后即可查看；须等后台审核和检查点完成后再断言最终状态。
+            expect(page.locator(".team-state")).to_have_text("进度已保存")
             current = client.get(f"/api/tasks/{task_id}").json()
             assert current["task"]["status"] == "pending_review"
             assert current["task"]["draft"]["approved"] is False

@@ -143,7 +143,7 @@ export interface ArtifactReference {
 export interface ConversationMessage {
   id: string;
   role: "user" | "assistant";
-  kind: "delegate" | "ask_user" | "finish" | "answer" | "changes" | "message";
+  kind: "delegate" | "ask_user" | "select_idea" | "finish" | "answer" | "changes" | "message";
   content: string;
   reason?: string;
   agent_id?: string;
@@ -183,6 +183,7 @@ export interface Collaboration {
   user_messages?: string[];
   summary?: string | null;
   artifacts: ArtifactReference[];
+  idea_selection?: { candidates: ArtifactReference; idea_index: number; idea: ArtifactReference } | null;
 }
 export interface Workflow {
   thread_id: string;
@@ -209,6 +210,7 @@ export interface Workflow {
       kind?: string;
       question?: string;
       missing_information?: string[];
+      ideas?: ArtifactReference;
     };
     actions: string[];
   }[];
@@ -235,6 +237,7 @@ export interface ModelConnection {
   credential_configured?: boolean;
   model_configured?: boolean;
   max_tokens: number;
+  reasoning_effort: "none" | "low" | "high" | "max" | null;
   timeout: number;
 }
 export interface ModelSettings extends ModelConnection {

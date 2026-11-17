@@ -59,11 +59,24 @@ class Store:
                     base_version INTEGER NOT NULL, result_json TEXT,
                     PRIMARY KEY(task_id, delegation_id)
                 );
+                CREATE TABLE IF NOT EXISTS context_archives (
+                    task_id TEXT NOT NULL, invocation_id TEXT NOT NULL, agent_id TEXT NOT NULL,
+                    messages TEXT NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    PRIMARY KEY(task_id, invocation_id)
+                );
+                CREATE TABLE IF NOT EXISTS preference_memories (
+                    scope TEXT PRIMARY KEY, preferences TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS preference_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL,
+                    preferences TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
             """)
             # 原有列与数据保留；旧草稿 payload 为空时从旧列读取。
             additions = {
                 "tasks": {"request_json": "TEXT", "profile_json": "TEXT", "last_error": "TEXT",
-                          "workflow_version": "INTEGER NOT NULL DEFAULT 1"},
+                          "workflow_version": "INTEGER NOT NULL DEFAULT 1",
+                          "memory_scope": "TEXT NOT NULL DEFAULT 'default'"},
                 "drafts": {"payload": "TEXT"},
             }
             with self._conn:
@@ -72,22 +85,57 @@ class Store:
                     for column, declaration in columns.items():
                         if column not in existing:
                             self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
-                self._conn.execute("PRAGMA user_version = 3")
+                self._conn.execute("PRAGMA user_version = 4")
 
     def close(self) -> None:
         self._conn.close()
 
+    def preferences(self, scope: str) -> dict:
+        row = self._conn.execute("SELECT preferences, updated_at FROM preference_memories WHERE scope=?", (scope,)).fetchone()
+        return {"scope": scope, "preferences": json.loads(row[0]) if row else [], "updated_at": row[1] if row else None}
+
+    def memory_scope(self, task_id: str) -> str:
+        row = self._conn.execute("SELECT memory_scope FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+        if row is None:
+            raise KeyError("任务不存在")
+        return row[0]
+
+    def save_preferences(self, scope: str, preferences: list[str]) -> dict:
+        from .memory import PreferenceInput
+        values = PreferenceInput(preferences=preferences).preferences
+        values = list(dict.fromkeys(item.strip() for item in values if item.strip()))
+        if not scope.strip() or len(scope) > 200 or any(len(item) > 1000 for item in values):
+            raise ValueError("偏好范围须为 1 到 200 字，单条偏好不超过 1000 字")
+        now = _now()
+        with self._lock, self._conn:
+            self._conn.execute("INSERT INTO preference_memories VALUES (?, ?, ?) ON CONFLICT(scope) DO UPDATE SET "
+                               "preferences=excluded.preferences, updated_at=excluded.updated_at", (scope, _json(values), now))
+            self._conn.execute("INSERT INTO preference_history(scope, preferences, updated_at) VALUES (?, ?, ?)",
+                               (scope, _json(values), now))
+        return self.preferences(scope)
+
+    def save_context_archive(self, task_id, invocation_id, agent_id, messages, status):
+        with self._lock, self._conn:
+            self._conn.execute("INSERT INTO context_archives VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(task_id, invocation_id) "
+                               "DO UPDATE SET messages=excluded.messages, status=excluded.status, updated_at=excluded.updated_at",
+                               (task_id, invocation_id, agent_id, _json(messages), status, _now()))
+
+    def context_archives(self, task_id):
+        return [{"invocation_id": row["invocation_id"], "agent_id": row["agent_id"],
+                 "messages": json.loads(row["messages"]), "status": row["status"], "updated_at": row["updated_at"]}
+                for row in self._conn.execute("SELECT * FROM context_archives WHERE task_id=? ORDER BY rowid", (task_id,))]
+
     def create_task(self, task_id: str, topic: str,
                     request: ContentRequest | None = None, profile: UserProfile | None = None,
-                    *, workflow_version: int = 2) -> None:
+                    *, workflow_version: int = 2, memory_scope: str = "default") -> None:
         now = _now()
         request = request or ContentRequest(goal=topic, topic=topic)
         profile = profile or UserProfile()
         with self._lock, self._conn:
             self._conn.execute(
                 "INSERT INTO tasks (task_id, topic, status, current_version, created_at, updated_at, "
-                "request_json, profile_json, workflow_version) VALUES (?, ?, 'pending', 0, ?, ?, ?, ?, ?)",
-                (task_id, topic, now, now, request.model_dump_json(), profile.model_dump_json(), workflow_version),
+                "request_json, profile_json, workflow_version, memory_scope) VALUES (?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?)",
+                (task_id, topic, now, now, request.model_dump_json(), profile.model_dump_json(), workflow_version, memory_scope),
             )
 
     def update_status(self, task_id: str, status: str) -> None:

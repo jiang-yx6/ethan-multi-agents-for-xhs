@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field
 
 class ReviewIssue(BaseModel):
     message: str
-    severity: Literal["warning", "error"] = "error"
+    # 语义审核以建议为主；只有程序能够确认的致命问题才显式标记 error。
+    severity: Literal["warning", "error"] = "warning"
     target: Literal["create", "research"] = "create"
 
 

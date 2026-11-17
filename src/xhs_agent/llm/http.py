@@ -13,7 +13,7 @@ from .config import LLMConfig
 from .models import ChatRequest, ChatResponse
 
 PROTECTED_FIELDS = {"model", "messages", "system", "stream", "tools", "tool_choice", "temperature",
-                    "max_tokens", "max_completion_tokens", "n"}
+                    "reasoning_effort", "max_tokens", "max_completion_tokens", "n"}
 
 
 class HTTPProvider(ABC):
@@ -84,9 +84,13 @@ class HTTPProvider(ABC):
                 raise ValueError
             result = self._decode(payload)
             allowed = {tool.name for tool in request.tools}
-            if any(call.name not in allowed for call in result.message.tool_calls):
-                raise ValueError
-            if result.message.tool_calls and (request.tool_choice == "none" or result.finish_reason != "tool_calls"):
+            # 已耗尽轮次的工具会从当前 definitions 中移除，但兼容模型仍可能再次返回历史工具名。
+            # 允许它进入 Runtime，由确定性的轮次限制生成本地错误结果；真正未注册的工具仍拒绝。
+            historical = {call.name for message in request.messages for call in message.tool_calls}
+            unknown = {call.name for call in result.message.tool_calls if call.name not in allowed | historical}
+            if unknown:
+                raise LLMResponseError("模型返回了未注册的工具调用：" + ", ".join(sorted(unknown)))
+            if result.message.tool_calls and result.finish_reason != "tool_calls":
                 raise ValueError
             if result.finish_reason == "tool_calls" and not result.message.tool_calls:
                 raise ValueError

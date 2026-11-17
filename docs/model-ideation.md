@@ -32,12 +32,16 @@ uv run xhs create "周末散步" --profile examples/profile.json --no-trends
 
 也可设置 `XHS_LLM_CONFIG` 指向角色配置文件。显式 `--llm-config` 优先于该路径变量；有配置文件时，Provider、模型及连接选项从其中的 `ideation` 对象读取，密钥按 `api_key_env` 或厂商预设解析。没有配置文件时，使用已有 `XHS_LLM_*` 配置规则。
 
-选择成功后继续原有流程：
+候选返回后，图会暂停等待人工确认。页面可直接选择候选卡片；CLI 使用：
 
 ```powershell
-uv run xhs answer TASK_ID --text "采用第一个方向"
+uv run xhs select-idea TASK_ID --index 1
+# 不满意时提出要求，生成新候选后重新选择
+uv run xhs regenerate-ideas TASK_ID --text "更贴近真实生活体验"
 uv run xhs status TASK_ID
 ```
+
+`select-idea --index` 从 1 开始。普通 `answer` 只回复父 Agent 的问题，不会隐式采用某个候选。确认记录绑定候选产物和版本，主 Agent 不能自行更换选题。
 
 查看已有任务、继续已有选题之后的流程不要求模型密钥。`LLMIdeationAgent` 延迟创建 Provider，读取状态或管理平台账号时不会调用模型。选题失败时保存原任务和错误，可配置好后执行：
 
@@ -66,7 +70,7 @@ uv run xhs --mock-ideation --mock-supervisor create "周末散步"
       └──→ model 节点
 ```
 
-`agents/runtime.py` 使用自定义 `ChatMessage` 和 `ChatRequest`，消息状态采用追加 reducer。工具处理完同轮全部调用后继续调用 Provider，保留 OpenAI 兼容服务的 `reasoning_content` 和 Anthropic thinking 原始块。每次选题运行都有独立消息状态，账号和任务上下文不会混用。
+`agents/runtime.py` 使用自定义 `ChatMessage` 和 `ChatRequest`，以普通循环追加本次消息。工具处理完同轮全部调用后继续调用 Provider，保留 OpenAI 兼容服务的 `reasoning_content` 和 Anthropic thinking 原始块。每次选题运行都有独立消息状态，账号和任务上下文不会混用。
 
 两个工具的角色都通过服务层绑定的访问器固定：
 
@@ -119,15 +123,16 @@ with create_llm_provider() as provider:
 
 ## 调用限制和验证
 
-`AgentConfig` 提供：
+`AgentConfig.ideation_backend` 选择 `llm` / `mock`。调用预算统一放入 `execution.roles.ideation`，与其他专业 Agent 使用相同字段：
 
 | 配置 | 默认 | 范围 |
 | --- | --- | --- |
-| `ideation_backend` | `llm` | `llm` / `mock` |
-| `ideation_max_model_calls` | 6 | 1～20 |
-| `ideation_max_tool_calls` | 12 | 0～40 |
-| `ideation_max_output_retries` | 1 | 0～3 |
+| `max_model_calls` | `null`（不限） | `null` 或 ≥1 的整数 |
+| `max_tool_calls` | `null`（不限） | `null` 或 ≥0 的整数 |
+| `max_output_retries` | `null`（不限） | `null` 或 ≥0 的整数 |
 
-输出修正也占用模型调用次数。模型截断、拒绝、调用超限或多次输出无效会报错，HTTP 层不自动重试。父图继续使用原有 SQLite 检查点与阶段缓存，已完成并保存的候选选题会被复用；失败重试仍可能重新调用模型。
+所有专业角色的三个预算默认均为 `null`，省略也表示不限次数；Python 使用 `None`。旧 `AgentConfig.ideation_max_*` 字段已移除；Python 调用改为 `AgentConfig(execution=ExecutionConfig(roles={"ideation": RoleExecution(...)}))`。直接构造 `LLMIdeationAgent` 仍可传入可选调用预算。
+
+设置有限预算时，输出修正也占用模型调用次数；超限会明确失败。不限次数时，工具和结构修正循环持续到交付有效结果或接口返回错误。模型截断、拒绝和 HTTP 错误仍会报错，HTTP 层不自动重试。父图使用 SQLite 检查点与阶段缓存，已完成并保存的候选选题会被复用；失败重试仍可能重新调用模型。
 
 测试通过脚本化 Provider 和 `httpx.MockTransport` 验证两种协议、Skill 权限、输出修正、调用上限、CLI 配置和失败恢复，不依赖真实 API Key，也不调用付费服务。

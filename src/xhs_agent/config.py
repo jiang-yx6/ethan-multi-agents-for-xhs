@@ -18,7 +18,7 @@ class AgentConfig(BaseModel):
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     supervisor_backend: Literal["llm", "mock"] = "llm"
     supervisor_llm: LLMConfig | None = None
-    team_max_rounds: int = Field(default=20, ge=1, le=100)
+    team_max_rounds: int | None = Field(default=None, ge=1)
     ideation_backend: Literal["llm", "mock"] = "llm"
     ideation_llm: LLMConfig | None = None
     research_backend: Literal["llm", "mock"] = "mock"
@@ -27,9 +27,6 @@ class AgentConfig(BaseModel):
     creation_llm: LLMConfig | None = None
     review_backend: Literal["llm", "rules", "mock"] = "rules"
     review_llm: LLMConfig | None = None
-    ideation_max_model_calls: int = Field(default=6, ge=1, le=20)
-    ideation_max_tool_calls: int = Field(default=12, ge=0, le=40)
-    ideation_max_output_retries: int = Field(default=1, ge=0, le=3)
 
 
 def load_role_llm(path: str | Path, role: str, *, required: bool = True) -> LLMConfig | None:

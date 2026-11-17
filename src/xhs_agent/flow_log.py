@@ -24,6 +24,7 @@ _fields = {
     "nodes", "interrupt_ids", "tool", "tool_call_id", "skill_id", "success", "call", "attempt",
     "will_retry", "elapsed_ms", "provider", "model", "finish_reason", "input_tokens", "output_tokens",
     "error_type", "error", "frames", "mode",
+    "original_messages", "sent_messages", "original_chars", "sent_chars",
 }
 
 
@@ -80,7 +81,7 @@ class FlowLog:
         finally:
             _sink.reset(token)
 
-    def _redact(self, text):
+    def redact(self, text):
         secrets = (*self.secrets, *(value for name, value in os.environ.items()
                                    if value and re.search(r"(?:API_KEY|ACCESS_TOKEN|SECRET|PASSWORD)$", name)))
         for secret in sorted(set(secrets), key=len, reverse=True):
@@ -100,7 +101,7 @@ class FlowLog:
                                for ref in values[key]]
         def safe(value):
             if isinstance(value, str):
-                return self._redact(value)[:4000]
+                return self.redact(value)[:4000]
             if isinstance(value, (list, tuple)):
                 return [safe(item) for item in value]
             if isinstance(value, dict):

@@ -16,7 +16,7 @@
 
 完成条件有两层：程序验证输出类型、非空必要内容、实际产物引用和草稿/审核版本；父 Agent 逐项对照 `acceptance_criteria` 判断内容是否满足委派目标。文本条件的语义判断由模型完成，并不等于逐条条件都有确定性的自动判定器。审核完成也不等于稿件通过或获准发布。
 
-代码精简已合并 `graph.py` 中批准、取消和替换草稿的重复节点包装；前端移除了旧侧栏、预览卡和设置标签等 47 个未引用样式选择器。生产代码中没有旧固定选题/调研/创作路由的调用入口。`workflow.py` 负责当前检查点与人工操作校验，`team_store.py` 负责当前委派账本，发布子图负责人工确认后的提交，均是现用代码。旧数据的只读识别、序列化白名单和 SQLite 增量迁移仍服务已有任务数据，不能作为废弃工作流直接删除。
+生产代码中没有旧固定选题/调研/创作路由的调用入口。人工节点在 `human.py` 中维护，模型连接生命周期由 `agents/model.py` 统一管理，组装由 `agents/factory.py` 负责。`workflow.py` 负责当前检查点与人工操作校验，`team_store.py` 负责当前委派账本，发布子图负责人工确认后的提交，均是现用代码。旧数据的只读识别、序列化白名单和 SQLite 增量迁移仍服务已有任务数据。当前模块职责见 [架构与维护边界](architecture.md)。
 
 ## 运行结构
 
@@ -26,7 +26,9 @@ flowchart TD
     M -->|delegate| D[execute_agent 专业 Agent 执行]
     M -->|ask_user| U[ask_user 等待用户补充]
     M -->|finish| F[finish 交付结果]
-    D --> M
+    D -->|返回候选选题| I[select_idea 人工选题]
+    D -->|其他结果| M
+    I -->|确认或要求重新生成| M
     U -->|回复后恢复| M
     F -->|有草稿| R[人工审核]
     F -->|无草稿| E([结束])
@@ -37,7 +39,15 @@ flowchart TD
     P -->|明确确认| X[发布服务]
 ```
 
-`graph.py` 是唯一图入口，负责父 Agent 节点、条件边与人工确认；`agents/supervisor.py` 调用项目 LLM Provider 作决策，`agents/delegation.py` 适配子 Agent，`team_store.py` 维护委派账本和版本化产物。每轮由模型根据执行历史和当前产物决定下一步。
+`graph.py` 是唯一图入口，负责父 Agent 节点、条件边与图编译；`human.py` 实现人工确认节点。`agents/supervisor.py` 调用项目 LLM Provider 作决策，`agents/delegation.py` 适配子 Agent，`team_store.py` 维护委派账本和版本化产物。每轮由模型根据执行历史和当前产物决定下一步。
+
+选题候选返回后必经 `select_idea` 人工节点，调用 `interrupt` 保存检查点；确认之前不会再次调用父模型，也不会自动采用候选 0。前端展示候选卡片，允许确认一个方向、填写要求重新生成或取消。已明确主题且未调用选题 Agent 的任务仍可直接创作。
+
+人工确认记录为 `IdeaSelection(candidates, idea_index, idea)`：候选集引用包含产物 ID 和版本，用户选中的 `IdeaCandidate` 单独保存为不可变 `idea` 产物。调研、创作委派必须引用确认的 `idea`，或引用同一候选集并使用已确认序号；注册表拒绝自行换题和省略确认输入。再次生成候选会要求重新确认。CLI 显示序号从 1 开始，API 的 `idea_index` 从 0 开始。
+
+确认记录还保存 `draft_version_at_selection`。若选题发生在已有草稿之后，必须交付比该版本更新的草稿并重新审核，不能直接把换题前的草稿作为新方向的交付。已停在旧人工审核节点的任务不会被后台回退；可新建任务验证完整选题过程。
+
+HTTP 使用 `POST /api/tasks/{task_id}/select_idea`（`idea_index`）或 `/regenerate_ideas`（`feedback`）。两者均须提供 `request_id`、`expected_version`、`interrupt_id`、`ideas_artifact_id` 和 `ideas_version`；过期候选或暂停位置返回 409，无效序号返回 422。重复提交同一请求 ID 返回原作业。普通 `/answer` 仅用于主 Agent 提问，不能代替人工选题确认。确认记录跨进程重启保留，日志中的 `idea_selected` 记录所选序号与产物引用。
 
 五个角色都有模型实现，可通过前端分别配置。调研、创作默认 Mock，审核默认规则；切换到模型后由 `agents/structured.py` 提供对应实现，并沿用 `SpecialistDelegate` 的存储与版本约束。配置检索服务后，调研模型可以自主搜索并提取正文，来源和摘录须通过工具会话校验；创作可接入独立图片生成/编辑接口与视觉输入。模型审核始终合并本地规则结果。配置及能力边界见 [专业 Agent 执行能力](specialist-execution.md)。自定义执行器也可以通过 `TaskService(delegated_agents={"creation": worker})` 注入，须持久化产物并遵守对应业务落库约束。
 
@@ -54,6 +64,8 @@ uv run xhs --mock-ideation --mock-supervisor create "周末出游" --no-research
 uv run xhs status TASK_ID
 uv run xhs collaboration TASK_ID
 uv run xhs answer TASK_ID --text "实际走过江边步道，想分享交通方式"
+uv run xhs select-idea TASK_ID --index 2
+uv run xhs regenerate-ideas TASK_ID --text "更贴近日常体验，减少攻略感"
 
 # 草稿人工审核、修改、批准与发布命令保持原用法
 uv run xhs modify TASK_ID --comment "补充交通方式"
@@ -79,7 +91,7 @@ uv run xhs approve TASK_ID
 
 不使用文件时，父 Agent 只读取 `XHS_SUPERVISOR_PROVIDER/MODEL/API_KEY/BASE_URL/PROTOCOL` 等独立环境变量，选题继续读取 `XHS_LLM_*`。父 Agent 的配置没有显式密钥或密钥变量时，只查找 `XHS_SUPERVISOR_API_KEY`。需要使用其他密钥变量时，在 supervisor 中明确设置 `api_key_env`。
 
-Python 配置为 `AgentConfig(supervisor_llm=..., ideation_llm=..., team_max_rounds=20)`。两个角色的 backend 分别默认 `llm`，`supervisor_backend` 与 `ideation_backend` 可单独设置。CLI 的 `--mock-supervisor` 仅模拟父 Agent，`--mock-ideation` 仅模拟选题；支持与配置文件组合，例如模拟选题并从文件加载真实 supervisor。`MockSupervisorAgent` 只用于显式离线演示，模型失败不会回退到 Mock。
+Python 配置为 `AgentConfig(supervisor_llm=..., ideation_llm=..., team_max_rounds=None)`。两个角色的 backend 分别默认 `llm`，`supervisor_backend` 与 `ideation_backend` 可单独设置。CLI 的 `--mock-supervisor` 仅模拟父 Agent，`--mock-ideation` 仅模拟选题；支持与配置文件组合，例如模拟选题并从文件加载真实 supervisor。`MockSupervisorAgent` 只用于显式离线演示，模型失败不会回退到 Mock。
 
 Web 提供 `GET /api/settings` 查询五个角色的公开配置，以及 `GET/PUT /api/settings/{role}` 单独读写；role 为 supervisor、ideation、research、creation、review。`POST /api/settings/{role}/copy` 接收 `{"source_role":"supervisor"}`，显式复制来源模型、接口和凭据。密钥按角色、服务商和接口地址分别加密，直接密钥不会出现在任何响应中。环境变量模式复制变量引用。
 
@@ -115,7 +127,7 @@ Web 提供 `GET /api/settings` 查询五个角色的公开配置，以及 `GET/P
 
 主 Agent 每轮的合法决策先写入业务库；模型节点重放时复用同轮决策。委派执行前记录任务内容与起始草稿版本，完成后写入匹配的结果。重放时复用已完成的委派和产物；草稿提交后异常也可按原起始版本复用已保存版本。
 
-内置子 Agent 的模型输出错误、长度限制、连接/超时或 HTTP 错误转为 `failed`，携带安全的 `failure_reason` 回到父 Agent；输入不足返回 `needs_input`。父 Agent 可以调整要求后重新委派，也可以提问暂停。未改变要求/输入/完成条件且没有新用户回复时，不能原样重复上一条失败委派；协作总轮次仍受预算限制。离线父 Agent 在失败后直接提问，每次回复最多重试一次，持续失败时再次等待用户。
+内置子 Agent 的模型输出错误、长度限制、连接/超时或 HTTP 错误转为 `failed`，携带安全的 `failure_reason` 回到父 Agent；输入不足返回 `needs_input`。父 Agent 可以调整要求后重新委派，也可以提问暂停。未改变要求/输入/完成条件且没有新用户回复时，不能原样重复上一条失败委派。离线父 Agent 在失败后直接提问，每次回复最多重试一次，持续失败时再次等待用户。
 
 模型配置错误、存储错误和未分类的程序异常保留为失败图节点，修复后使用 `retry` 恢复原节点。发布异常仍走独立的回执与防重复提交规则，不转给父 Agent 自动重发。
 
@@ -123,9 +135,11 @@ Web 提供 `GET /api/settings` 查询五个角色的公开配置，以及 `GET/P
 
 输出校验失败时，Runtime 发出 `output_validation` 事件，包含角色、校验次数、是否继续修正，以及字段路径/错误类型或业务规则。达到修正次数或模型调用预算后，最终异常保留最后一条校验说明。事件由 Web 作业持久化，不包含原始响应、无效字段值或内部推理。
 
-每次用户回复或人工修改后重新计算协作预算，默认最多 20 轮父 Agent 决策；超限会明确失败。检查执行记录后可提高 `team_max_rounds` 并重试。返工由父 Agent 决定，并受协作预算限制。
+协作轮次默认不限，`team_max_rounds=None`；父图的 LangGraph 递归预算使用系统最大整数，避免框架默认步数提前结束。仅在显式设置有限整数时才检查轮次，每次用户回复或人工修改后重新计数。返工由父 Agent 根据结果决定。
 
 产物不可覆盖同一版本，决策只能引用当前目录中确实存在的产物。同一次委派的每类输入只允许一个引用，避免适配器覆盖同类数据；多个文本素材可放入 `materials` 或一个 `material` 数组。目录提供各类最新产物，历史保留先前的委派与结果。交付已有草稿前必须审核当前版本，审核正文的 `draft_version` 也必须匹配；用户提出修改后必须有新版本。主 Agent 的 `finish` 不会批准或发布草稿，交付草稿会进入独立人工审核节点。
+
+模型输出的 `task.input_artifacts` 和 `finish.artifacts` 只填写 `{"artifact_id":"实际产物 ID","version":1}`。`agents/decisions.py` 从当前任务的可用目录解析这两个字段，补齐可信的 `task_id`、`kind` 和 `summary`，然后再校验角色权限、人工选题和草稿审核条件。不存在的 ID、不可用版本、重复引用和跨任务引用仍会拒绝，错误包含引用字段和数组下标。兼容已保存的完整引用；模型重述摘要不会造成引用失败，模型提供的摘要和类型也不会覆盖存储记录。业务委派、检查点及前端 API 继续保存和使用完整引用；`TeamStore` 对不可变产物及同一版本防覆盖的校验保持不变。
 
 ## 主 Agent 的职责
 
@@ -201,7 +215,7 @@ class DelegatedAgent(Protocol):
 | `ask_user` | `reason`、`question`、非空 `missing_information` |
 | `finish` | `reason`、`summary`，可选的 `artifacts` |
 
-解析 JSON 时使用 `SUPERVISOR_DECISION_ADAPTER`，需要执行目录与上下文检查时使用 `registry.validate_decision()`。后者会额外检查目标角色是否可委派、是否出现在当前目录中、业务任务是否匹配、委派 ID 是否重复，以及引用是否来自当前产物目录。
+`agents/decisions.py` 中的 `SUPERVISOR_DECISION_ADAPTER` 只验证完整内部协议。模型的最小产物引用通过 `parse_supervisor_decision()` 解析，需要执行目录与上下文检查时使用 `registry.validate_decision()`。后者会额外检查目标角色是否可委派、是否出现在当前目录中、业务任务是否匹配、委派 ID 是否重复，以及引用是否来自当前产物目录。
 
 ```python
 from xhs_agent.agents import build_agent_registry

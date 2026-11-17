@@ -41,7 +41,7 @@ class FinishProvider:
 
 def test_missing_parent_does_not_fall_back_to_child_config_or_environment(tmp_path, monkeypatch, isolated_parent_env):
     calls = []
-    monkeypatch.setattr("xhs_agent.agents.supervisor.create_llm_provider", lambda config: calls.append(config))
+    monkeypatch.setattr("xhs_agent.agents.model.create_llm_provider", lambda config: calls.append(config))
     svc = TaskService(tmp_path, config=AgentConfig(ideation_llm=LLMConfig(
         provider="deepseek", model="child-config-model", api_key=SecretStr("child-config-key"))))
     try:
@@ -75,7 +75,7 @@ def test_parent_uses_only_its_explicit_config_and_owns_its_provider(tmp_path, mo
         seen.append(config)
         return provider
 
-    monkeypatch.setattr("xhs_agent.agents.supervisor.create_llm_provider", create)
+    monkeypatch.setattr("xhs_agent.agents.model.create_llm_provider", create)
     svc = TaskService(tmp_path, config=AgentConfig(
         supervisor_llm=LLMConfig(provider="anthropic", model="parent-model", api_key=SecretStr("parent-only-key")),
         ideation_llm=LLMConfig(provider="deepseek", model="child-model", api_key=SecretStr("child-only-key")),
@@ -96,7 +96,7 @@ def test_parent_reads_its_own_environment_namespace(tmp_path, monkeypatch, isola
     monkeypatch.setenv("XHS_SUPERVISOR_MODEL", "parent-env-model")
     monkeypatch.setenv("XHS_SUPERVISOR_API_KEY", "parent-env-key")
     provider, seen = FinishProvider(), []
-    monkeypatch.setattr("xhs_agent.agents.supervisor.create_llm_provider", lambda config: seen.append(config) or provider)
+    monkeypatch.setattr("xhs_agent.agents.model.create_llm_provider", lambda config: seen.append(config) or provider)
     svc = TaskService(tmp_path)
     try:
         assert svc.create_task("验证环境配置").status == "completed"
@@ -120,7 +120,7 @@ def test_cli_can_mock_child_while_loading_only_parent_config(tmp_path, monkeypat
     path.write_text(json.dumps({"supervisor": {"provider": "anthropic", "model": "parent-model",
                                               "api_key_env": "PARENT_TEST_KEY"}}), encoding="utf-8")
     seen = []
-    monkeypatch.setattr("xhs_agent.agents.supervisor.create_llm_provider",
+    monkeypatch.setattr("xhs_agent.agents.model.create_llm_provider",
                         lambda config: seen.append(config) or FinishProvider())
     assert main(["--data-dir", str(tmp_path / "data"), "--llm-config", str(path),
                  "--mock-ideation", "create", "仅模拟选题"]) == 0
@@ -131,7 +131,7 @@ def test_web_parent_settings_and_keys_are_separate_and_survive_restart(tmp_path,
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
     from xhs_agent.web import create_app
-    from xhs_agent.web.app import credential_scope
+    from xhs_agent.web.settings import credential_scope
 
     seen = []
 

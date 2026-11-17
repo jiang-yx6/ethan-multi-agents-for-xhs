@@ -14,6 +14,9 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from ..content_limits import (
+    XIAOHONGSHU_BODY_MAX_CHARS, XIAOHONGSHU_TITLE_MAX_CHARS, xiaohongshu_rendered_body,
+)
 from .base import UnsupportedCapability
 from .models import (
     AccountIdentity, PlatformCapabilities, PlatformContent, PublishJob,
@@ -101,8 +104,7 @@ def identity_from_payload(payload: object, status: int = 200) -> AccountIdentity
 
 
 def rendered_body(content: PlatformContent) -> str:
-    tags = ["#" + tag.lstrip("#").strip() for tag in content.tags]
-    return content.body + ("\n" + " ".join(tags) if tags else "")
+    return xiaohongshu_rendered_body(content.body, content.tags)
 
 
 class XiaohongshuConnector:
@@ -147,10 +149,10 @@ class XiaohongshuConnector:
     def validate(self, content: PlatformContent) -> ValidationReport:
         errors = []
         # 这是首版连接器支持范围；页面中的实时校验仍是最终约束。
-        if not content.title.strip() or len(content.title) > 20:
-            errors.append("标题须为 1～20 个字符，请修改后重新审核")
-        if not content.body.strip() or len(rendered_body(content)) > 1000:
-            errors.append("正文不能为空，正文与话题合计暂限 1000 个字符")
+        if not content.title.strip() or len(content.title) > XIAOHONGSHU_TITLE_MAX_CHARS:
+            errors.append(f"标题须为 1～{XIAOHONGSHU_TITLE_MAX_CHARS} 个字符，请修改后重新审核")
+        if not content.body.strip() or len(rendered_body(content)) > XIAOHONGSHU_BODY_MAX_CHARS:
+            errors.append(f"正文不能为空，正文与话题合计暂限 {XIAOHONGSHU_BODY_MAX_CHARS} 个字符")
         if len(content.tags) > 10 or any(not t.lstrip("#").strip() or "#" in t.lstrip("#")
                                        or any(c.isspace() for c in t.lstrip("#")) for t in content.tags):
             errors.append("话题暂限 10 个，每个话题须为连续文字")

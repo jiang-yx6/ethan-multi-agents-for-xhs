@@ -6,7 +6,7 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `agents/runtime.py` | `ModelToolRuntime`：通用 LangGraph 模型 → 工具 → 输出校验循环；无选题字段和业务工具分支 |
+| `agents/runtime.py` | `ModelToolRuntime`：通用模型 → 工具 → 输出校验循环；无选题字段和业务工具分支，执行次数默认不限 |
 | `agents/tools.py` | `AgentTool`、严格参数 schema、工具结果及图片输入；技能读取也是普通工具 |
 | `execution.py` | 每个角色的提示词补充、技能/工具范围、视觉能力和执行预算；检索/图片服务连接配置 |
 | `agents/ideation.py` | 选题模型与 `IdeaBatch` 校验，只使用选题授权技能和已有热点 |
@@ -21,7 +21,7 @@
 
 执行配置示例为 `examples/execution-config.json`。支持同级 `execution` 对象写在原模型配置文件中，也可单独通过 `--execution-config` 指定；单独指定时优先使用该文件，或设置 `XHS_EXECUTION_CONFIG`。配置在启动时读取，不会被网页保存文本模型配置覆盖。
 
-启动入口会自动通过 `python-dotenv` 读取项目根目录 `.env`，不覆盖终端已有变量。可在该文件填写 `TAVILY_API_KEY`、`XHS_IMAGE_API_KEY`，并设置 `XHS_LLM_CONFIG`、`XHS_EXECUTION_CONFIG`，随后使用 `uv run --extra web --extra browser xhs web` 启动。修改后重启生效；`.env` 不提交 Git，模板为 `.env.example`。行为依据 [python-dotenv 官方说明](https://github.com/theskumar/python-dotenv#readme)。
+启动入口会自动通过 `python-dotenv` 读取项目根目录 `.env`，不覆盖终端已有变量。可在该文件填写 `TAVILY_API_KEY`、`DASHSCOPE_API_KEY`，并设置 `XHS_LLM_CONFIG`、`XHS_EXECUTION_CONFIG`，随后使用 `uv run --extra web --extra browser xhs web` 启动。修改后重启生效；`.env` 不提交 Git。行为依据 [python-dotenv 官方说明](https://github.com/theskumar/python-dotenv#readme)。
 
 ```powershell
 uv run xhs --llm-config examples/llm-config.json --execution-config examples/execution-config.json web
@@ -46,7 +46,7 @@ uv run xhs --llm-config examples/llm-config.json --execution-config examples/exe
 
 调研先搜索，再选择命中的 URL 提取正文；不能直接要求工具读取任意本地或未命中的地址。工具失败作为结构化消息回到子模型，子模型可以更换来源。最终来源只能来自本次成功读取的正文；标题与读取时间以工具记录为准，证据摘录必须确实存在于原文。没有正文证据时保留待核实问题，不能伪造已完成核实。`needs_research=false` 时不向模型提供检索工具。
 
-创作模型收到用户需求、画像、简报、反馈与上一版草稿；有明确修改反馈时不能原样返回旧稿。图片输出只允许引用输入或本次生成工具返回的文件。`generate_image` 不带参考图时生成新图，带目录中的 `reference_image_id` 时上传对应图片执行编辑；改图不能仅改图片描述。每次委派最多生成四张，文件落在数据目录的 `generated-images/`；相同接口、模型、尺寸、提示词与参考图片的已保存结果会复用。请求中断发生在远端生成后、本地保存前时，无法保证不会再次计费。
+创作模型收到用户需求、画像、简报、反馈与上一版草稿；有明确修改反馈时不能原样返回旧稿。图片输出只允许引用输入或本次生成工具返回的文件。`generate_image` 不带参考图时生成新图，带目录中的 `reference_image_id` 时上传对应图片执行编辑；改图不能仅改图片描述。生成数量不限，文件落在数据目录的 `generated-images/`；相同接口、模型、尺寸、提示词与参考图片的已保存结果会复用。请求中断发生在远端生成后、本地保存前时，无法保证不会再次计费。
 
 视觉输入由角色配置 `supports_vision` 明确声明，并同时授权 `inspect_image`。项目不会根据厂商名称猜测任意网关的具体模型是否支持视觉。OpenAI Chat Completions 和 Anthropic Messages 均支持图片消息编码；只有声明视觉能力且本次调用看图工具时才发送图片。文本模型没有视觉能力时，仍可委派独立的图片生成模型，图片输出与看图能力分别判断。
 
@@ -62,7 +62,7 @@ Web API 的 `ContentRequest` 同样支持 `input_images`（已有本地素材路
 
 ## 上下文与验证
 
-每次业务调用创建新的 Runtime 消息和工具会话；没有共享专业 Agent 的 messages。来源目录、已生成图片和工具权限都按本次调用创建，不能凭其他调用的图片 ID 或 URL 读取其工具结果。完整对话保存在子图检查点，父图历史只保留 `DelegationRecord` 的摘要和引用；Web 事件只记录工具名、角色和成功/失败，不包含原始模型响应或凭据。
+每次业务调用创建新的 Runtime 消息和工具会话；没有共享专业 Agent 的 messages。来源目录、已生成图片和工具权限都按本次调用创建，不能凭其他调用的图片 ID 或 URL 读取其工具结果。完整任务历史保存在父图检查点；专业 Agent 的任务消息、工具调用和公开回答保存在 `store.db` 的 `context_archives`，不保存隐藏推理及供应商 thinking 签名。Runtime 显式关闭检查点继承，执行存档用于查看和审计，不代表能从任意工具中间步骤续跑。父模型只接收任务摘要、最近窗口及当前有效产物引用，程序仍用完整历史校验。详细说明见 [记忆与上下文](memory-context.md)。
 
 `tests/test_specialist_execution.py` 使用真实协议适配器与 HTTP MockTransport 验证检索、正文提取、失败换源、证据修正、图片上传编辑、视觉编码、生成文件复用、真实改稿、规则合并及上下文隔离，不访问外网或调用付费模型。
 

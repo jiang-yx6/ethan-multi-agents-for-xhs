@@ -23,10 +23,11 @@ def test_conversation_persists_chronological_messages_and_decisions_across_resta
         detail = client.get(url).json()
         pause = detail["workflow"]["interrupts"][0]
         first = detail["collaboration"]["messages"]
-        assert [item["kind"] for item in first] == ["delegate", "ask_user"]
-        reply = "选择第一个方向，素材是我走过的江边步道"
-        wait(client, client.post(url + "/answer", json={"request_id": str(uuid.uuid4()), "expected_version": 0,
-                                                       "interrupt_id": pause["id"], "answer": reply}))
+        assert [item["kind"] for item in first] == ["delegate", "select_idea"]
+        reply = "已确认选题 1：" + detail["ideas"][0]["title"]
+        wait(client, client.post(url + "/select_idea", json={"request_id": str(uuid.uuid4()), "expected_version": 0,
+            "interrupt_id": pause["id"], "idea_index": 0,
+            "ideas_artifact_id": pause["value"]["ideas"]["artifact_id"], "ideas_version": pause["value"]["ideas"]["version"]}))
         detail = client.get(url).json()
         messages = detail["collaboration"]["messages"]
         assert [item["role"] for item in messages] == ["assistant", "assistant", "user", "assistant", "assistant", "assistant"]

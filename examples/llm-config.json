@@ -1,29 +1,38 @@
 {
   "supervisor": {
     "provider": "deepseek",
-    "model": "supervisor-model-id",
-    "api_key_env": "XHS_SUPERVISOR_API_KEY"
+    "model": "deepseek-flash",
+    "api_key_env": "XHS_SUPERVISOR_API_KEY",
+    "max_tokens": 8000,
+    "reasoning_effort": "none"
   },
   "ideation": {
     "provider": "deepseek",
-    "model": "deepseek-v4-pro",
-    "api_key_env": "DEEPSEEK_API_KEY",
+    "model": "deepseek-flash",
+    "api_key_env": "XHS_IDEATION_API_KEY",
     "timeout": 120,
-    "max_tokens": 4096
+    "max_tokens": 8000,
+    "reasoning_effort": "low"
   },
   "research": {
-    "provider": "qwen",
-    "model": "YOUR_MODEL_ID",
-    "api_key_env": "XHS_RESEARCH_API_KEY"
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "api_key_env": "XHS_RESEARCH_API_KEY",
+    "max_tokens": 8000,
+    "reasoning_effort": "low"
   },
   "creation": {
-    "provider": "anthropic",
-    "model": "YOUR_MODEL_ID",
-    "api_key_env": "XHS_CREATION_API_KEY"
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "api_key_env": "XHS_CREATION_API_KEY",
+    "max_tokens": 8000,
+    "reasoning_effort": "low"
   },
   "review": {
-    "provider": "openai",
-    "model": "YOUR_MODEL_ID",
-    "api_key_env": "XHS_REVIEW_API_KEY"
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "api_key_env": "XHS_REVIEW_API_KEY",
+    "max_tokens": 8000,
+    "reasoning_effort": "none"
   }
 }

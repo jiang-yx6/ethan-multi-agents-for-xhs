@@ -47,6 +47,8 @@ class OpenAIProvider(HTTPProvider):
         body = {"model": self.config.model, "messages": messages, "stream": False,
                 token_field: request.max_tokens if request.max_tokens is not None else self.config.max_tokens,
                 **self._options(request)}
+        if self.config.reasoning_effort is not None:
+            body["reasoning_effort"] = self.config.reasoning_effort
         if request.tools:
             body["tools"] = [{"type": "function", "function": {
                 "name": tool.name, "description": tool.description, "parameters": tool.input_schema,
@@ -90,11 +92,14 @@ class OpenAIProvider(HTTPProvider):
             raise ValueError
         if len({call.id for call in calls}) != len(calls):
             raise ValueError
+        # 部分 OpenAI 兼容服务错误地用 stop 标记包含 tool_calls 的响应；工具调用本身完整时按协议归一化。
+        normalized_reason = "tool_calls" if calls and reason == "stop" else reason
         usage = payload.get("usage") or {}
         return ChatResponse(
             provider=self.config.provider, model=payload.get("model") or self.config.model,
             message=ChatMessage(role="assistant", content=content, tool_calls=calls, reasoning_content=reasoning),
-            finish_reason="content_filter" if refusal else reason if reason in {"stop", "length", "tool_calls", "content_filter"} else "other",
+            finish_reason="content_filter" if refusal else normalized_reason if normalized_reason in {
+                "stop", "length", "tool_calls", "content_filter"} else "other",
             raw_finish_reason=reason,
             usage=TokenUsage(input_tokens=usage.get("prompt_tokens", 0), output_tokens=usage.get("completion_tokens", 0)),
             request_id=payload.get("id"),

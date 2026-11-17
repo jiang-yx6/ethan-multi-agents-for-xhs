@@ -9,6 +9,7 @@ class WorkflowConflictError(ValueError):
 
 
 GATES = {
+    "select_idea": ("waiting_input", ["select_idea", "regenerate_ideas", "cancel"]),
     "ask_user": ("waiting_input", ["answer", "cancel"]),
     "review": ("pending_review", ["draft", "changes", "message", "approve", "cancel"]),
     "publish_gate": ("approved", ["draft", "changes", "message", "publish", "preflight", "export", "cancel"]),
@@ -17,6 +18,7 @@ TERMINAL = {"published", "submitted", "unknown", "cancelled", "completed"}
 STEP_MESSAGES = {
     "supervisor": "主 Agent 已决定下一步", "execute_agent": "本次委派已执行",
     "ask_user": "用户补充信息已接收", "finish": "协作结果已交付",
+    "select_idea": "用户选题操作已接收",
     "replace_draft": "新版本已保存",
     "mark_approved": "当前版本已批准", "publish_gate": "已确认本次发布操作",
     "publish": "发布步骤已结束，请查看实际回执", "cancelled": "创作已取消",
@@ -30,7 +32,7 @@ def describe_workflow(task_id: str, snapshot) -> WorkflowView:
         for pause in task.interrupts:
             raw = pause.value if isinstance(pause.value, dict) else {}
             # 草稿及审核正文由业务 API 提供；这里仅暴露人工交互的必要信息。
-            value = {key: raw[key] for key in ("kind", "task_id", "version", "hint", "question", "missing_information") if key in raw}
+            value = {key: raw[key] for key in ("kind", "task_id", "version", "hint", "question", "missing_information", "ideas") if key in raw}
             kind = raw.get("kind", task.name)
             actions = GATES.get(kind, (None, []))[1] if task.name == kind else []
             pauses.append(WorkflowInterrupt(id=pause.id, node=task.name, kind=kind,
@@ -50,7 +52,7 @@ def gate_status(task: TaskView, workflow: WorkflowView) -> str | None:
     pause = workflow.interrupts[0]
     if pause.kind not in GATES or pause.node != pause.kind:
         return None
-    if pause.kind == "ask_user":
+    if pause.kind in {"ask_user", "select_idea"}:
         return "waiting_input"
     if not task.draft or pause.value.get("version") != task.current_version:
         return None

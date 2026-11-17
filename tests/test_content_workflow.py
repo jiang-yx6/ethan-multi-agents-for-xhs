@@ -152,7 +152,9 @@ def test_research_retains_source_text_and_can_skip_search(data_dir):
     assert "这段正文必须传给创作环节。" in task.draft.body
     calls = search.calls
     other = svc.create_task(ContentRequest(goal="整理照片", needs_research=False))
-    svc.answer(other.task_id, "0")
+    pause = svc.workflow(other.task_id).interrupts[0]
+    svc.select_idea(other.task_id, 0, interrupt_id=pause.id,
+                    ideas_artifact_id=pause.value["ideas"]["artifact_id"], ideas_version=pause.value["ideas"]["version"])
     assert search.calls == calls
     svc.close()
 

@@ -64,6 +64,7 @@ function editable(settings: ModelSettings) {
     base_url: settings.base_url || null,
     trust_env: settings.trust_env,
     max_tokens: settings.max_tokens,
+    reasoning_effort: settings.reasoning_effort,
     timeout: settings.timeout,
   };
 }
@@ -339,7 +340,8 @@ export default function AgentSettings({
                     {settings.startup.values.provider} ·{" "}
                     {settings.startup.values.model || "未配置模型 ID"} ·
                     最大输出 {settings.startup.values.max_tokens} Token · 超时{" "}
-                    {settings.startup.values.timeout} 秒
+                    {settings.startup.values.timeout} 秒 · 推理强度{" "}
+                    {settings.startup.values.reasoning_effort || "厂商默认"}
                   </p>
                 </div>
               )}
@@ -502,6 +504,28 @@ export default function AgentSettings({
                       <p className="form-help">
                         单次响应的输出预算。遇到 length
                         截断时可调高，以服务商支持的上限为准。
+                      </p>
+                    </div>
+                    <div>
+                      <label htmlFor="agent-reasoning-effort">推理强度</label>
+                      <select
+                        id="agent-reasoning-effort"
+                        value={displayed.reasoning_effort || ""}
+                        onChange={(event) =>
+                          patch({
+                            reasoning_effort: (event.target.value ||
+                              null) as ModelSettings["reasoning_effort"],
+                          })
+                        }
+                      >
+                        <option value="">使用厂商默认</option>
+                        <option value="none">关闭思考 · 最快</option>
+                        <option value="low">低思考 · 平衡</option>
+                        <option value="high">高思考 · 较慢</option>
+                        <option value="max">最大思考 · 最慢</option>
+                      </select>
+                      <p className="form-help">
+                        父 Agent 与审核通常无需长推理；调低后可减少等待和隐藏推理 Token。
                       </p>
                     </div>
                     <div>

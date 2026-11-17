@@ -7,7 +7,8 @@ from pydantic import ValidationError
 from xhs_agent.agents import AgentRegistry, DelegatedAgent, SupervisorAgent, build_agent_registry
 from xhs_agent.agents.base import SkillEnabledAgent
 from xhs_agent.agents.ideation import LLMIdeationAgent
-from xhs_agent.agents.supervisor import SUPERVISOR_DECISION_ADAPTER, supervisor_system_prompt
+from xhs_agent.agents.decisions import SUPERVISOR_DECISION_ADAPTER
+from xhs_agent.agents.supervisor import supervisor_system_prompt
 from xhs_agent.llm import ChatMessage, ChatResponse, ToolCall
 from xhs_agent.models import (
     AgentDefinition, ArtifactReference, AskUserDecision, ContentRequest, DelegateDecision,
@@ -129,12 +130,27 @@ def test_failed_delegation_cannot_repeat_without_changed_inputs_or_user_reply(re
     assert registry.validate_decision(changed, context(registry, history=(record,))) == changed
 
 
+def test_completed_review_cannot_repeat_for_same_draft_version(registry):
+    review = artifact(kind="review", artifact_id="review-1", version=1, summary="审核 v1：存在待解决问题")
+    repeated = DelegateDecision(action="delegate", reason="再次审核", task=task(delegation_id="review-again"))
+    with pytest.raises(ValueError, match="草稿 v1 已完成审核"):
+        registry.validate_decision(repeated, context(registry, artifacts=(artifact(), review)))
+
+    newer = artifact(artifact_id="draft-2", version=2, summary="修改后的第二版草稿")
+    next_review = repeated.model_copy(update={"task": repeated.task.model_copy(update={
+        "delegation_id": "review-v2", "input_artifacts": (newer,),
+    })})
+    assert registry.validate_decision(
+        next_review, context(registry, artifacts=(newer, review)),
+    ) == next_review
+
+
 def test_decisions_cannot_reuse_history_or_invent_artifacts(registry):
     record = DelegationRecord(task=task(), result=result())
     with pytest.raises(ValueError, match="委派 ID"):
         registry.validate_decision(DelegateDecision(action="delegate", reason="重做", task=task()),
                                    context(registry, history=(record,)))
-    for ref in (artifact(version=2), artifact(artifact_id="invented"), artifact(summary="篡改的摘要")):
+    for ref in (artifact(version=2), artifact(artifact_id="invented")):
         with pytest.raises(ValueError, match="已有的产物"):
             registry.validate_decision(DelegateDecision(action="delegate", reason="审核",
                                                        task=task(input_artifacts=(ref,))), context(registry))
@@ -152,6 +168,68 @@ def test_decisions_cannot_reuse_history_or_invent_artifacts(registry):
                                    context(registry, available_agents=()))
     with pytest.raises(ValidationError):
         registry.validate_decision({"action": "publish", "account": "main"}, context(registry))
+
+
+@pytest.mark.parametrize("action", ["delegate", "finish"])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_model_selects_identity_and_program_restores_canonical_metadata(registry, action, legacy):
+    ref = {"artifact_id": artifact().artifact_id, "version": 1}
+    if legacy:
+        ref.update(task_id="task-1", kind="material", summary="换一种说法的摘要")
+    raw = ({"action": "delegate", "reason": "检查", "task": {
+        **task().model_dump(mode="json"), "input_artifacts": [ref]}} if action == "delegate" else
+        {"action": "finish", "reason": "完成", "summary": "交付说明", "artifacts": [ref]})
+    original = json.dumps(raw)
+    decision = registry.validate_decision(raw, context(registry))
+    refs = decision.task.input_artifacts if action == "delegate" else decision.artifacts
+    assert refs == (artifact(),)
+    assert json.dumps(raw) == original
+
+
+def test_typed_decision_summary_drift_is_normalized(registry):
+    changed = DelegateDecision(action="delegate", reason="检查", task=task(input_artifacts=(artifact(summary="改写摘要"),)))
+    normalized = registry.validate_decision(changed, context(registry))
+    assert normalized.task.input_artifacts == (artifact(),)
+    assert changed.task.input_artifacts[0].summary == "改写摘要"
+
+
+@pytest.mark.parametrize("ref,problem", [
+    ({"artifact_id": "missing", "version": 1}, "ID 不存在"),
+    ({"artifact_id": "draft-1", "version": 2}, "版本不在"),
+    ({"artifact_id": "draft-1", "version": 1, "task_id": "other"}, "任务归属"),
+])
+def test_selector_diagnostics_distinguish_missing_version_and_foreign_task(registry, ref, problem):
+    with pytest.raises(ValueError, match=problem) as exc:
+        registry.validate_decision({"action": "finish", "reason": "完成", "summary": "结果", "artifacts": [ref]}, context(registry))
+    assert "artifacts[0]" in str(exc.value)
+
+
+@pytest.mark.parametrize("ref", [
+    {"artifact_id": "draft-1", "version": True},
+    {"artifact_id": "draft-1", "version": "1"},
+    {"artifact_id": "draft-1", "version": 1, "unknown": "not-allowed"},
+])
+def test_selector_rejects_invalid_shape_without_relaxing_contract(registry, ref):
+    with pytest.raises(ValidationError):
+        registry.validate_decision({"action": "finish", "reason": "完成", "summary": "结果", "artifacts": [ref]}, context(registry))
+
+
+def test_model_schema_only_requests_reference_identity():
+    from xhs_agent.agents.decisions import supervisor_decision_schema
+    schema = supervisor_decision_schema()
+    ref = schema["$defs"]["ArtifactReference"]
+    assert set(ref["properties"]) == {"artifact_id", "version"}
+    assert set(ref["required"]) == {"artifact_id", "version"}
+    assert "summary" in SUPERVISOR_DECISION_ADAPTER.json_schema()["$defs"]["ArtifactReference"]["properties"]
+
+
+@pytest.mark.parametrize("action", ["delegate", "finish"])
+def test_nested_python_models_cannot_bypass_reference_resolution(registry, action):
+    ref = artifact(artifact_id="invented")
+    raw = ({"action": "delegate", "reason": "检查", "task": task(input_artifacts=(ref,))} if action == "delegate" else
+           {"action": "finish", "reason": "完成", "summary": "结果", "artifacts": [ref]})
+    with pytest.raises(ValueError, match="ID 不存在"):
+        registry.validate_decision(raw, context(registry))
 
 
 def test_registry_exposes_only_enabled_delegatable_agents(registry):

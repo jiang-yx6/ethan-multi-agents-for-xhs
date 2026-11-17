@@ -91,6 +91,7 @@ function Conversation(
   const [text, setText] = useState("");
   const [boundInterrupt, setBoundInterrupt] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [selectionDirty, setSelectionDirty] = useState(false);
   const scroll = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const canAnswer = detail.allowed_actions.includes("answer");
@@ -127,13 +128,17 @@ function Conversation(
       ),
     );
   useEffect(() => {
-    props.onDirty(Boolean(text.trim()));
-  }, [text, props.onDirty]);
+    props.onDirty(Boolean(text.trim()) || selectionDirty);
+  }, [text, selectionDirty, props.onDirty]);
   useEffect(() => () => props.onDirty(false), [props.onDirty]);
   useEffect(() => {
-    if (stick.current && scroll.current)
-      scroll.current.scrollTop = scroll.current.scrollHeight;
-  }, [messages.length, busy, task.current_version]);
+    if (!stick.current || !scroll.current) return;
+    const container = scroll.current;
+    const selection = pause?.kind === "select_idea" ? container.querySelector<HTMLElement>(".idea-selection") : null;
+    container.scrollTop = selection
+      ? container.scrollTop + selection.getBoundingClientRect().top - container.getBoundingClientRect().top - 12
+      : container.scrollHeight;
+  }, [messages.length, busy, task.current_version, pause?.id]);
 
   async function send(event: FormEvent) {
     event.preventDefault();
@@ -166,6 +171,8 @@ function Conversation(
     ? "请先保存或放弃草稿中的编辑，再发送消息。"
     : busy || sending
       ? "团队正在处理本轮消息，结果会出现在右侧。"
+      : pause?.kind === "select_idea"
+        ? "请在候选卡片中确认选题，团队会按你的选择继续。"
       : canAnswer
         ? "父 Agent 正在等你回复，补充后继续分工。"
         : canMessage
@@ -238,6 +245,15 @@ function Conversation(
             {error}
           </div>
         )}
+        {pause?.kind === "select_idea" && pause.value.ideas && (
+          <IdeaSelectionPanel
+            key={pause.id}
+            detail={detail}
+            loading={props.loading || busy || props.disabled}
+            onAction={props.onAction}
+            onDirty={setSelectionDirty}
+          />
+        )}
       </div>
       {task.draft && (
         <button className="chat-draft-shortcut" onClick={props.onOpenDraft}>
@@ -251,7 +267,7 @@ function Conversation(
         </button>
       )}
       <form
-        className="conversation-composer"
+        className={`conversation-composer${pause?.kind === "select_idea" ? " choosing-idea" : ""}`}
         onSubmit={(event) => void send(event)}
       >
         {stale && !sending && (
@@ -352,6 +368,65 @@ function Conversation(
   );
 }
 
+function IdeaSelectionPanel(props: Pick<TaskActions, "onAction" | "onDirty" | "loading"> & { detail: TaskDetail }) {
+  const { detail } = props;
+  const pause = detail.workflow.interrupts[0];
+  const source = pause.value.ideas!;
+  const [selected, setSelected] = useState<number | null>(null);
+  const [feedback, setFeedback] = useState("");
+  const [sending, setSending] = useState(false);
+  const disabled = props.loading || sending;
+  useEffect(() => { props.onDirty(Boolean(feedback.trim())); }, [feedback, props.onDirty]);
+  useEffect(() => () => props.onDirty(false), [props.onDirty]);
+  async function submit(regenerate: boolean) {
+    if (disabled || (regenerate ? !feedback.trim() : selected === null)) return;
+    setSending(true);
+    try {
+      await props.onAction(regenerate ? "regenerate_ideas" : "select_idea", {
+        interrupt_id: pause.id,
+        ideas_artifact_id: source.artifact_id,
+        ideas_version: source.version,
+        expected_version: detail.task.current_version,
+        ...(regenerate ? { feedback: feedback.trim() } : { idea_index: selected }),
+      }, () => { setFeedback(""); props.onDirty(false); });
+    } finally { setSending(false); }
+  }
+  return (
+    <section className="idea-selection" aria-label="人工选择选题">
+      <div className="idea-selection-heading">
+        <span className="eyebrow">由你决定方向</span>
+        <h3>先选一题，再继续创作</h3>
+        <p>团队已暂停。确认后，父 Agent 将围绕这个选题安排后续工作。</p>
+      </div>
+      <fieldset disabled={disabled}>
+        <legend className="sr-only">候选选题</legend>
+        {detail.ideas.map((idea, index) => (
+          <label key={index} className={`idea-choice${selected === index ? " selected" : ""}`}>
+            <input type="radio" name={`idea-${pause.id}`} checked={selected === index} onChange={() => setSelected(index)} />
+            <span className="idea-choice-number">{String(index + 1).padStart(2, "0")}</span>
+            <span className="idea-choice-content">
+              <strong>{idea.title}</strong>
+              <span>{idea.angle}</span>
+              <small>{idea.why}</small>
+              {idea.required_materials?.length > 0 && <small>需要素材：{idea.required_materials.join("、")}</small>}
+            </span>
+          </label>
+        ))}
+      </fieldset>
+      <button type="button" className="button primary" disabled={disabled || selected === null || !detail.allowed_actions.includes("select_idea")} onClick={() => void submit(false)}>
+        {sending ? "处理中…" : "确认选题并继续"}<Icon name="arrow" />
+      </button>
+      <div className="idea-regenerate">
+        <label htmlFor={`idea-feedback-${pause.id}`}>想换个方向？</label>
+        <textarea id={`idea-feedback-${pause.id}`} rows={2} maxLength={10000} value={feedback} disabled={disabled}
+          placeholder="例如：更贴近日常生活，减少攻略感，重新给我几个角度…"
+          onChange={(event) => setFeedback(event.target.value)} />
+        <button type="button" className="button small" disabled={disabled || !feedback.trim() || !detail.allowed_actions.includes("regenerate_ideas")} onClick={() => void submit(true)}>按要求重新生成</button>
+      </div>
+    </section>
+  );
+}
+
 function ChatBubble({
   message: item,
   missing,
@@ -373,6 +448,7 @@ function ChatBubble({
         {item.kind === "ask_user" && (
           <span className="chat-kind">确认方向</span>
         )}
+        {item.kind === "select_idea" && <span className="chat-kind">请你选题</span>}
         {item.kind === "finish" && <span className="chat-kind">本轮交付</span>}
       </div>
       <div className="chat-bubble">
@@ -464,6 +540,12 @@ function Results({
             <p>{latest?.message || "正在安排下一步"}</p>
           </div>
         )}
+        {detail.workflow.interrupts[0]?.kind === "select_idea" && !busy && (
+          <div className="notice" role="status">等待你确认选题。团队已暂停，后续任务会在确认后继续。</div>
+        )}
+        {collaboration?.idea_selection && (
+          <div className="notice">已确认方向：{collaboration.idea_selection.idea.summary.replace(/^用户选定：/, "")}</div>
+        )}
         {detail.task.draft && (
           <section className="current-delivery">
             <span className="eyebrow">LATEST / 最新交付</span>
@@ -496,7 +578,7 @@ function Results({
               (item) => item.task.delegation_id === step.delegation_id,
             );
             const replied =
-              step.kind === "ask_user" &&
+              ["ask_user", "select_idea"].includes(step.kind) &&
               (collaboration?.messages || []).some(
                 (item, i, all) =>
                   item.role === "user" &&
@@ -514,10 +596,10 @@ function Results({
                       : busy
                         ? "执行中"
                         : "待执行"
-                : step.kind === "ask_user"
+                : ["ask_user", "select_idea"].includes(step.kind)
                   ? replied
                     ? "已回复"
-                    : "待回复"
+                    : step.kind === "select_idea" ? "待选择" : "待回复"
                   : "已交付";
             return (
               <details
@@ -533,7 +615,7 @@ function Results({
                     <strong>
                       {step.kind === "delegate"
                         ? agentNames[step.agent_id || ""] || step.agent_id
-                        : step.kind === "ask_user"
+                        : ["ask_user", "select_idea"].includes(step.kind)
                           ? "确认内容方向"
                           : "本轮结果交付"}
                     </strong>
@@ -569,6 +651,7 @@ function Results({
                         <Artifact
                           key={`${ref.artifact_id}:${ref.version}`}
                           reference={ref}
+                          defaultOpen={step.agent_id === "research" && ref.kind === "brief"}
                         />
                       ))}
                     </>
@@ -601,8 +684,14 @@ function Results({
   );
 }
 
-function Artifact({ reference: ref }: { reference: ArtifactReference }) {
-  const [open, setOpen] = useState(false);
+function Artifact({
+  reference: ref,
+  defaultOpen = false,
+}: {
+  reference: ArtifactReference;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
   const [content, setContent] = useState<unknown>(null);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
@@ -628,6 +717,7 @@ function Artifact({ reference: ref }: { reference: ArtifactReference }) {
   return (
     <details
       className="artifact-card"
+      open={open}
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
       <summary>
@@ -718,7 +808,12 @@ function ArtifactContent({
       angles: string[];
       supplied_materials: string[];
       pending_questions: string[];
-      sources: { title: string; url: string }[];
+      sources: {
+        title: string;
+        url: string;
+        retrieved_at?: string;
+        published_at?: string | null;
+      }[];
     };
     return (
       <>
@@ -741,17 +836,33 @@ function ArtifactContent({
             </ul>
           </>
         )}
-        {brief.sources.map((source, i) => (
-          <p key={i}>
-            {safeLink(source.url) ? (
-              <a href={safeLink(source.url)} target="_blank" rel="noreferrer">
-                {source.title} ↗
-              </a>
-            ) : (
-              source.title
-            )}
-          </p>
-        ))}
+        <h5>可追溯来源 · {brief.sources.length}</h5>
+        <div className="source-ledger">
+          {brief.sources.map((source, i) => {
+            const href = safeLink(source.url);
+            const host = href ? new URL(href).hostname.replace(/^www\./, "") : "链接不可用";
+            return (
+              <div className="source-entry" key={`${source.url}:${i}`}>
+                <span>{String(i + 1).padStart(2, "0")}</span>
+                <div>
+                  {href ? (
+                    <a href={href} target="_blank" rel="noreferrer">
+                      {source.title} ↗
+                    </a>
+                  ) : (
+                    <strong>{source.title}</strong>
+                  )}
+                  <small>
+                    {host}
+                    {source.published_at ? ` · 发布 ${source.published_at.slice(0, 10)}` : ""}
+                    {source.retrieved_at ? ` · 获取 ${source.retrieved_at.slice(0, 10)}` : ""}
+                  </small>
+                </div>
+              </div>
+            );
+          })}
+          {!brief.sources.length && <p>本次调研没有取得可追溯网页来源。</p>}
+        </div>
       </>
     );
   }

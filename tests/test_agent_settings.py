@@ -13,7 +13,7 @@ from xhs_agent.config import AgentConfig, MODEL_ROLES
 from xhs_agent.llm import ChatMessage, ChatResponse, LLMConfig
 from xhs_agent.service import TaskService
 from xhs_agent.web import create_app
-from xhs_agent.web.app import credential_scope
+from xhs_agent.web.settings import credential_scope
 
 
 @pytest.fixture
@@ -128,8 +128,7 @@ def test_copied_creation_and_review_models_are_used_by_real_agent_loop(tmp_path,
         def close(self):
             pass
 
-    monkeypatch.setattr("xhs_agent.agents.supervisor.create_llm_provider", Provider)
-    monkeypatch.setattr("xhs_agent.agents.structured.create_llm_provider", Provider)
+    monkeypatch.setattr("xhs_agent.agents.model.create_llm_provider", Provider)
     app = create_app(tmp_path)
     with TestClient(app) as client:
         assert client.put("/api/settings/supervisor", json=model()).status_code == 200

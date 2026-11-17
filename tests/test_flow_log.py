@@ -24,22 +24,24 @@ def test_nodes_delegation_selection_pause_and_restart_append_to_log(tmp_path):
     task = service.create_task(ContentRequest(goal="周末路线"))
     first = rows(tmp_path)
     assert task.status == "waiting_input"
-    assert any(row["kind"] == "node_paused" and row["node"] == "ask_user" for row in first)
+    assert any(row["kind"] == "node_paused" and row["node"] == "select_idea" for row in first)
     assert not any(row["kind"] == "node_failed" for row in first)
     assert all(row["task_id"] == task.task_id for row in first)
     service.close()
     service = TaskService(tmp_path, config=CONFIG)
     try:
-        task = service.answer(task.task_id, "1")
+        pause = service.workflow(task.task_id).interrupts[0]
+        task = service.select_idea(task.task_id, 1, interrupt_id=pause.id,
+                                  ideas_artifact_id=pause.value["ideas"]["artifact_id"], ideas_version=pause.value["ideas"]["version"])
         assert task.status == "pending_review"
         service.approve(task.task_id)
         service.publish(task.task_id)
         events = rows(tmp_path)
         assert events[:len(first)] == first
-        assert any(row["kind"] == "delegation_started" and row["idea_index"] == 1 for row in events)
+        assert any(row["kind"] == "idea_selected" and row["idea_index"] == 1 for row in events)
         assert any(row["kind"] == "node_completed" and row["node"] == "publish"
                    and row["agent_id"] == "publishing" for row in events)
-        assert [row["action"] for row in events if row["kind"] == "user_action"] == ["answer", "approve", "publish"]
+        assert [row["action"] for row in events if row["kind"] == "user_action"] == ["select_idea", "approve", "publish"]
         assert len({row["run_id"] for row in events if row["kind"] == "execution_started"}) == 4
         assert all(row.get("run_id") for row in events if row["kind"].startswith("node_"))
         assert all("elapsed_ms" in row for row in events if row["kind"] == "node_completed")

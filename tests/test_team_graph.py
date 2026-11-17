@@ -231,10 +231,7 @@ def test_committed_work_is_not_repeated_after_checkpoint_failure(tmp_path, monke
 
 
 def test_round_budget_stops_the_team_and_can_resume_with_larger_budget(tmp_path):
-    def choose(ctx):
-        return delegate(ctx, "ideation") if len(ctx.history) < 2 else finish(ctx)
-
-    supervisor = CallbackSupervisor(choose)
+    supervisor = CallbackSupervisor(direct)
     svc = make_service(tmp_path, supervisor_agent=supervisor,
                        config=AgentConfig(ideation_backend="mock", team_max_rounds=2, supervisor_backend="mock"))
     task = svc.register_task("路线")
@@ -245,7 +242,7 @@ def test_round_budget_stops_the_team_and_can_resume_with_larger_budget(tmp_path)
     svc = make_service(tmp_path, supervisor_agent=supervisor,
                        config=AgentConfig(ideation_backend="mock", team_max_rounds=3, supervisor_backend="mock"))
     try:
-        assert svc.retry(task.task_id).status == "completed"
+        assert svc.retry(task.task_id).status == "pending_review"
         assert svc.collaboration(task.task_id)["summary"]
     finally:
         svc.close()
@@ -300,11 +297,43 @@ def test_real_supervisor_model_loop_uses_context_and_no_tools(tmp_path):
         assert all(not req.tools and req.tool_choice == "none" for req in provider.requests)
         first, last = [json.loads(req.messages[1].content) for req in (provider.requests[0], provider.requests[-1])]
         assert first["history"] == [] and len(last["history"]) == 2
-        assert first["remaining_rounds"] == 20
-        assert last["remaining_rounds"] == 18
+        assert first["remaining_rounds"] is None
+        assert last["remaining_rounds"] is None
     finally:
         svc.close()
     assert not provider.closed
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_supervisor_returns_selectors_and_graph_persists_full_trusted_references(tmp_path, legacy):
+    class Provider(ModelProvider):
+        def chat(self, request):
+            response = super().chat(request)
+            decision = json.loads(response.message.content)
+            refs = decision.get("task", {}).get("input_artifacts", decision.get("artifacts", []))
+            for ref in refs:
+                if legacy:
+                    ref["summary"] = "模型重新描述摘要"
+                else:
+                    for field in ("task_id", "kind", "summary"):
+                        del ref[field]
+            response.message.content = json.dumps(decision)
+            return response
+
+    provider = Provider()
+    svc = make_service(tmp_path, supervisor_agent=LLMSupervisorAgent(provider))
+    try:
+        task = svc.create_task("路线")
+        assert task.status == "pending_review" and len(provider.requests) == 3
+        history = svc.collaboration(task.task_id)["history"]
+        for record in history:
+            for raw in record["task"]["input_artifacts"]:
+                ref = ArtifactReference.model_validate(raw)
+                TeamStore(svc.store).resolve(ref)
+                assert ref.summary != "模型重新描述摘要"
+        assert svc.approve(task.task_id).status == "approved"
+    finally:
+        svc.close()
 
 
 def test_model_can_repair_a_semantically_invalid_finish_decision(tmp_path):
@@ -413,7 +442,7 @@ def test_supervisor_has_independent_config_and_requires_its_own_section(tmp_path
     path.write_text(json.dumps({"ideation": {"provider": "openai", "model": "ideas"}}), encoding="utf-8")
     with pytest.raises(ValueError, match="supervisor"):
         load_role_llm(path, "supervisor")
-    assert AgentConfig().team_max_rounds == 20
+    assert AgentConfig().team_max_rounds is None
     svc = TaskService(tmp_path / "data")
     try:
         assert isinstance(svc.supervisor_agent, LLMSupervisorAgent)
@@ -434,8 +463,8 @@ def test_only_parent_child_graph_is_available(tmp_path):
         task = svc.register_task("新任务")
         with svc._open_graph(task.task_id) as graph:
             nodes = set(graph.get_graph().nodes)
-        assert {"supervisor", "execute_agent", "ask_user", "finish"}.issubset(nodes)
-        assert not {"ideation", "select_idea", "research", "create", "quality_review", "route_quality"} & nodes
+        assert {"supervisor", "execute_agent", "ask_user", "select_idea", "finish"}.issubset(nodes)
+        assert not {"ideation", "research", "create", "quality_review", "route_quality"} & nodes
     finally:
         svc.close()
 

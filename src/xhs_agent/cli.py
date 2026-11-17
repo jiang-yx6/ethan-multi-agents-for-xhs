@@ -74,7 +74,14 @@ def _print_pause(service, task_id):
     if workflow.status == "unsupported":
         print(workflow.error)
     for pause in workflow.interrupts:
-        if pause.kind == "ask_user":
+        if pause.kind == "select_idea":
+            print("请选择候选选题（序号从 1 开始）：")
+            for index, idea in enumerate(service.candidate_ideas(task_id), 1):
+                print(f"  {index}. {idea.title}：{idea.angle}")
+                print(f"     受众：{idea.audience}；推荐原因：{idea.why}")
+            print(f"确认：uv run xhs select-idea {task_id} --index 1")
+            print(f'重选：uv run xhs regenerate-ideas {task_id} --text "希望调整的方向"')
+        elif pause.kind == "ask_user":
             print("主 Agent 提问：" + pause.value.get("question", ""))
             print(f'回复：uv run xhs answer {task_id} --text "补充的信息"')
         elif pause.kind == "review":
@@ -92,7 +99,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="专业 Agent 的提示词、技能/工具授权、检索与图片接口配置文件")
     parser.add_argument("--mock-ideation", action="store_true", help="仅使用离线选题，不影响父 Agent")
     parser.add_argument("--mock-supervisor", action="store_true", help="仅使用离线父 Agent，不影响选题 Agent")
+    parser.add_argument("--memory-scope", default="default", help="长期偏好范围；Web 使用 profile:画像ID")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("preferences", help="查看、替换或清除独立保存的长期偏好")
+    group = p.add_mutually_exclusive_group()
+    group.add_argument("--set", dest="preferences", action="append", help="明确保存的偏好，可重复；替换原列表")
+    group.add_argument("--clear", action="store_true")
+    p = sub.add_parser("context-archive", help="查看任务摘要及完整模型执行存档")
+    p.add_argument("task_id")
 
     p = sub.add_parser("web", help="启动本地 Web 创作工作台")
     p.add_argument("--host", choices=["127.0.0.1", "localhost"], default="127.0.0.1")
@@ -120,6 +135,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("collaboration", help="查看主 Agent 决策、委派记录与产物")
     p.add_argument("task_id")
+
+    p = sub.add_parser("select-idea", help="人工确认候选选题")
+    p.add_argument("task_id")
+    p.add_argument("--index", type=int, required=True, help="候选序号，从 1 开始")
+    p = sub.add_parser("regenerate-ideas", help="提出要求，重新生成候选选题")
+    p.add_argument("task_id")
+    p.add_argument("--text", required=True)
 
     p = sub.add_parser("approve", help="批准当前草稿")
     p.add_argument("task_id", help="任务 ID")
@@ -250,6 +272,22 @@ def main(argv: list[str] | None = None) -> int:
     data_dir = args.data_dir or _data_dir()
     svc = None
     try:
+        if args.command in {"preferences", "context-archive"}:
+            from .storage import Store
+            store = Store(Path(data_dir) / "store.db")
+            try:
+                if args.command == "preferences":
+                    result = (store.save_preferences(args.memory_scope, [] if args.clear else args.preferences)
+                              if args.clear or args.preferences is not None else store.preferences(args.memory_scope))
+                else:
+                    if store.get_task(args.task_id) is None:
+                        raise KeyError("任务不存在")
+                    result = {"task_id": args.task_id, "task_summary": store.get_stage(args.task_id, "context_summary"),
+                              "runs": store.context_archives(args.task_id)}
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            finally:
+                store.close()
+            return 0
         if args.command == "skills":
             return _run_skills(args)
         if args.command == "platforms":
@@ -294,26 +332,26 @@ def main(argv: list[str] | None = None) -> int:
                 needs_research=not args.no_research, supplied_materials=args.material,
                 constraints=args.constraint,
                 input_images=args.image, generate_images=args.generate_images,
-            ), profile=profile, trends=trends)
+            ), profile=profile, trends=trends, memory_scope=args.memory_scope)
             _print_task(task)
-            ideas = svc.candidate_ideas(task.task_id)
-            if ideas:
-                print("-" * 40)
-                print("候选选题：")
-                for i, idea in enumerate(ideas):
-                    print(f"  [{i}] {idea.title}")
-                    print(f"      受众：{idea.audience}")
-                    print(f"      角度：{idea.angle}")
-                    print(f"      推荐原因：{idea.why}")
-                    print(f"      画像匹配：{idea.profile_match}")
-                    if idea.trend_urls:
-                        print(f"      热点来源：{' '.join(idea.trend_urls)}")
             _print_pause(svc, task.task_id)
         elif args.command == "status":
             _print_task(svc.status(args.task_id))
             _print_pause(svc, args.task_id)
         elif args.command == "answer":
             _print_task(svc.answer(args.task_id, args.text))
+            _print_pause(svc, args.task_id)
+        elif args.command in {"select-idea", "regenerate-ideas"}:
+            workflow = svc.workflow(args.task_id)
+            if len(workflow.interrupts) != 1 or workflow.interrupts[0].kind != "select_idea":
+                raise ValueError("当前任务没有等待人工选择选题")
+            pause = workflow.interrupts[0]
+            source = pause.value.get("ideas", {})
+            params = {"ideas_artifact_id": source.get("artifact_id"), "ideas_version": source.get("version"),
+                      "interrupt_id": pause.id}
+            result = (svc.select_idea(args.task_id, args.index - 1, **params) if args.command == "select-idea"
+                      else svc.regenerate_ideas(args.task_id, args.text, **params))
+            _print_task(result)
             _print_pause(svc, args.task_id)
         elif args.command == "collaboration":
             print(json.dumps(svc.collaboration(args.task_id), ensure_ascii=False, indent=2))

@@ -25,6 +25,13 @@ class ArtifactReference(CollaborationModel):
     summary: Text
 
 
+class ArtifactSelector(CollaborationModel):
+    """模型只选择产物身份；完整元数据由程序从当前可用目录补齐。"""
+
+    artifact_id: Text
+    version: Annotated[StrictInt, Field(ge=1)]
+
+
 class AgentDefinition(CollaborationModel):
     agent_id: AgentRole
     description: Text
@@ -110,6 +117,22 @@ class DelegationRecord(CollaborationModel):
         return self
 
 
+class IdeaSelection(CollaborationModel):
+    """人工确认绑定到不可变候选集，不能随模型决策改变。"""
+
+    candidates: ArtifactReference
+    idea_index: Annotated[StrictInt, Field(ge=0)]
+    idea: ArtifactReference
+    draft_version_at_selection: Annotated[StrictInt, Field(ge=0)] = 0
+
+    @model_validator(mode="after")
+    def check_selection(self):
+        if (self.candidates.kind != "ideas" or self.idea.kind != "idea"
+                or self.candidates.task_id != self.idea.task_id):
+            raise ValueError("选题确认必须关联同一任务的候选集和选定方向")
+        return self
+
+
 class SupervisorContext(CollaborationModel):
     """主 Agent 的决策输入；专业 Agent 完整对话不进入此上下文。"""
 
@@ -120,11 +143,22 @@ class SupervisorContext(CollaborationModel):
     artifacts: tuple[ArtifactReference, ...] = ()
     history: tuple[DelegationRecord, ...] = ()
     user_messages: tuple[Text, ...] = ()
-    remaining_rounds: int = Field(default=20, ge=0)
+    remaining_rounds: int | None = Field(default=None, ge=0)
+    idea_selection: IdeaSelection | None = None
+    idea_feedback: Text | None = None
+    task_summary: dict = Field(default_factory=dict)
+    context_window: dict = Field(default_factory=dict)
+    long_term_preferences: tuple[Text, ...] = ()
+    control_state: dict = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def check_context(self):
         _check_artifacts(self.task_id, self.artifacts)
+        if self.idea_selection:
+            refs = (self.idea_selection.candidates, self.idea_selection.idea)
+            _check_artifacts(self.task_id, refs)
+            if any(ref not in self.artifacts for ref in refs):
+                raise ValueError("选题确认只能引用当前上下文中的候选集和选定方向")
         if any(record.task.task_id != self.task_id for record in self.history):
             raise ValueError("协作历史必须属于当前任务")
         ids = [record.task.delegation_id for record in self.history]

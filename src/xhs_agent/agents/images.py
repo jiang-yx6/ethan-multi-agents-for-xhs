@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from threading import Lock
 from typing import Protocol
 from uuid import uuid4
 
@@ -14,6 +15,7 @@ from ..execution import ImageSettings
 from ..llm import LLMConfigurationError, LLMConnectionError, LLMHTTPError, LLMResponseError
 from ..models import ImageRef
 from ..platforms.content import local_image_path
+from .research.search import public_url
 from .tools import AgentTool, ToolArgs, ToolResult
 
 
@@ -94,6 +96,60 @@ class OpenAIImageProvider:
         return ImageRef(description=prompt, source=str(target.resolve()))
 
 
+class DashScopeImageProvider(OpenAIImageProvider):
+    """阿里云百炼 Qwen-Image 的 OpenAI 兼容同步接口。"""
+
+    def generate(self, prompt, reference=None):
+        if reference and not self.supports_edit:
+            raise LLMConfigurationError("当前图片接口未声明编辑能力")
+        data, kind = image_bytes(reference) if reference else (None, None)
+        identity = json.dumps([self.config.base_url, self.config.model, self.config.size, prompt,
+                               hashlib.sha256(data).hexdigest() if data else None], ensure_ascii=False)
+        target = self.output_dir / (hashlib.sha256(identity.encode()).hexdigest() + ".png")
+        if target.is_file():
+            image_bytes(str(target))
+            return ImageRef(description=prompt, source=str(target.resolve()))
+        # 百炼的 OpenAI 兼容接口使用 widthxheight；星号仅属于 DashScope 原生协议。
+        payload = {"model": self.config.model, "prompt": prompt, "n": 1,
+                   "size": self.config.size.replace("*", "x")}
+        if data:
+            payload["image"] = f"data:image/{kind};base64," + base64.b64encode(data).decode()
+        try:
+            with httpx.Client(timeout=self.config.timeout, trust_env=self.config.trust_env,
+                              transport=self.transport, follow_redirects=False) as client:
+                headers = {"Authorization": "Bearer " + self.config.key()}
+                response = client.post(self.config.endpoint("/images/generations"), headers=headers, json=payload)
+                if not 200 <= response.status_code < 300:
+                    raise LLMHTTPError(response.status_code)
+                image_url = response.json()["data"][0]["url"]
+                public_url(image_url)
+                downloaded = client.get(image_url)
+        except LLMHTTPError:
+            raise
+        except httpx.HTTPError:
+            raise LLMConnectionError("百炼图片服务连接、生成或结果下载失败") from None
+        except (KeyError, IndexError, TypeError, ValueError):
+            raise LLMResponseError("百炼图片接口未返回有效的图片 URL") from None
+        if not 200 <= downloaded.status_code < 300:
+            raise LLMHTTPError(downloaded.status_code)
+        output = downloaded.content
+        if len(output) > 20 * 1024 * 1024:
+            raise LLMResponseError("百炼生成图片超过 20MB，无法保存")
+        try:
+            if image_type(output) != "png":
+                raise ValueError
+        except ValueError:
+            raise LLMResponseError("百炼图片下载结果不是有效 PNG") from None
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix("." + uuid4().hex + ".tmp")
+        try:
+            temporary.write_bytes(output)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return ImageRef(description=prompt, source=str(target.resolve()))
+
+
 class ImageArgs(ToolArgs):
     image_id: str = Field(min_length=1)
 
@@ -108,6 +164,7 @@ class ImageTools:
         self.images = {f"image-{index}": image for index, image in enumerate(images)}
         self.provider, self.supports_vision = provider, supports_vision
         self.generated = []
+        self._lock = Lock()
 
     def catalog(self):
         return [{"image_id": key, **value.model_dump()} for key, value in self.images.items()]
@@ -128,12 +185,11 @@ class ImageTools:
 
     def generate(self, args):
         reference = self._image(args.reference_image_id).source if args.reference_image_id else None
-        if len(self.generated) >= 4:
-            raise ValueError("本次委派最多生成四张图片")
         image = self.provider.generate(args.prompt, reference)
-        identifier = "generated-" + str(len(self.generated))
-        self.generated.append(image)
-        self.images[identifier] = image
+        with self._lock:
+            identifier = "generated-" + str(len(self.generated))
+            self.generated.append(image)
+            self.images[identifier] = image
         return json.dumps({"image_id": identifier, **image.model_dump()}, ensure_ascii=False)
 
     def tools(self):

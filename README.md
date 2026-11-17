@@ -2,7 +2,7 @@
 
 根据**用户本次需求、账号画像和可选热点信息**生成内容，支持攻略、观点、生活记录、测评、科普等类型。用户目标优先，热点仅作为相关选题的参考。
 
-基于 Python + uv + LangGraph + Pydantic。**新任务默认由真实模型主 Agent 动态委派**：根据执行结果选择专业 Agent、询问用户或交付内容；选题也使用真实模型并按需读取授权技能。五个 Agent 都可在前端单独配置模型，支持从其他 Agent 已保存的模型一键应用接口和凭据。资料整理和创作默认采用 Mock，审核默认采用规则，可分别切换到模型实现；发布默认只写本地模拟记录，小红书真实图文发布可单独启用。实时热点抓取和实际图片生成尚未接入。
+基于 Python + uv + LangGraph + Pydantic。**新任务默认由真实模型主 Agent 动态委派**：根据执行结果选择专业 Agent、询问用户或交付内容；选题也使用真实模型并按需读取授权技能。五个 Agent 都可在前端单独配置模型，支持从其他 Agent 已保存的模型一键应用接口和凭据。资料整理和创作默认采用 Mock，审核默认采用规则，可分别切换到模型实现；发布默认只写本地模拟记录，小红书真实图文发布可单独启用。调研已支持 Tavily 检索与分页读取，创作已支持独立图片生成和编辑接口，需配置并授权对应工具；实时热点采集仍需接入 Provider。
 
 Mock 修改会保留上一版正文、记录并展示待落实的修改意见，不代表已完成语义改写。默认审核只检查基本结构、证据来源对应关系与占位情况，风格、事实真实性、画像禁区和是否编造经历仍需人工检查或接入语义审核模型。
 
@@ -10,9 +10,12 @@ Mock 修改会保留上一版正文、记录并展示待落实的修改意见，
 
 父 Agent 作为 LangGraph 决策节点，四个专业子 Agent 负责选题、资料整理、创作和质量审核。结构化决策作为条件边，执行结果和用户回复都会回到父 Agent。`graph.py` 是唯一图入口。
 
+模块职责与本次代码整理说明见 [架构与维护边界](docs/architecture.md)。
+
 ```text
 需求 + 画像 → 主 Agent 决策
                  ├─ delegate → 目标专业 Agent → 结果回传 → 主 Agent
+                 │              └─ 返回候选选题 → 人工选择 → 主 Agent
                  ├─ ask_user → 暂停等待用户回复 → 主 Agent
                  └─ finish → 草稿交付 / 结果摘要
                                ↓ 有草稿时
@@ -22,9 +25,11 @@ Mock 修改会保留上一版正文、记录并展示待落实的修改意见，
                               └─ 批准 → 导出 / 发布确认
 ```
 
-默认每次交互最多 20 轮决策，可通过 `AgentConfig(team_max_rounds=...)` 设置。交付草稿前必须检查当前版本，父 Agent 和自动审核都不能批准或发布。旧固定流程已移除，旧检查点只能查看已有数据；请新建父子 Agent 任务。
+父 Agent 协作轮次、模型调用、工具调用和输出修正默认均不限次数（Python 为 `None`，JSON 为 `null`）；需要主动限制时才设置具体整数。交付草稿前必须检查当前版本，父 Agent 和自动审核都不能批准或发布。旧固定流程已移除，旧检查点只能查看已有数据；请新建父子 Agent 任务。
 
 ## 主 Agent 协作协议
+
+完整任务历史与模型工作上下文分开保存：父模型使用任务摘要、最近几轮和当前产物引用；专业模型按完整工具轮次压缩，执行消息独立存档。长期偏好按画像/范围显式保存，人工选题、版本及批准仍由结构化状态校验。配置与管理入口见 [记忆与上下文](docs/memory-context.md)。
 
 统一委派任务、执行结果、主 Agent 三类决策与 Agent 注册表已接入团队图。通过 `TaskService.agent_registry` 查看当前组装的角色；父 Agent 使用独立的 `supervisor` 模型配置，选题使用 `ideation`，两个角色的模型、密钥与运行模式分别设置。回复问题使用 `xhs answer TASK_ID --text "补充信息"`，查看记录使用 `xhs collaboration TASK_ID`。模型字段、API、权限边界和恢复机制见 [Agent 协作协议](docs/agent-collaboration.md)。
 
@@ -78,7 +83,10 @@ uv run xhs create "城市漫步" --profile examples/profile.json --trends exampl
 ```bash
 uv run xhs collaboration TASK_ID
 # 父 Agent 提问时回复
-uv run xhs answer TASK_ID --text "我希望采用周末路线方向"
+uv run xhs answer TASK_ID --text "我实际走过江边步道，希望分享真实体验"
+# 返回候选选题后必须人工选择，或提出要求重新生成
+uv run xhs select-idea TASK_ID --index 2
+uv run xhs regenerate-ideas TASK_ID --text "更贴近日常生活，减少攻略感"
 uv run xhs status TASK_ID
 uv run xhs modify TASK_ID -c "保留原有结构，补充交通方式"
 uv run xhs approve TASK_ID
@@ -93,7 +101,7 @@ uv run xhs publish TASK_ID
 - `--material`、`--constraint` 可以重复传入，当前接收文本；不会自动读取素材文件。
 - `--no-trends` 不调用热点提供器，也不把传入的热点用于选题。
 - 没有热点时直接围绕需求和画像选题，不生成假热点。
-- 选题序号从 0 开始；越界会报错，任务继续等待选择。
+- 候选选题返回后必经人工确认；CLI 和页面显示序号从 1 开始，API 的 `idea_index` 从 0 开始。无效选择不会推进图，也不会默认采用第一题。
 - `cancel TASK_ID` 用于取消待审核或已批准任务。
 - 执行失败后用 `retry TASK_ID` 继续失败节点。真实发布回执不明时应先核对平台结果；平台适配器须实现自身幂等。
 - 默认数据目录是 `./data`；可用全局参数 `--data-dir`（放在子命令前）或 `XHS_DATA_DIR` 覆盖。
@@ -160,7 +168,7 @@ service = TaskService(
     data_dir="data",
     # ideation_agent=..., research_agent=..., creation_agent=...,
     # review_agent=..., trend_provider=..., publisher=...,
-    config=AgentConfig(team_max_rounds=20),
+    config=AgentConfig(team_max_rounds=None),
 )
 try:
     task = service.create_task(
@@ -189,7 +197,7 @@ finally:
 
 任务流程自动追加到数据目录下的 `logs/agents-YYYY-MM-DD.jsonl`（默认 `data/logs/`）。日志记录节点起止、父 Agent 决策、委派要求和选题序号、工具调用、人工暂停/恢复、耗时与异常，并按 `task_id`、`run_id`、`delegation_id` 关联。查看方法与字段说明见 [流程日志](docs/flow-logging.md)。
 
-CLI 和 Web 工厂启动时通过 `load_dotenv(override=False)` 读取项目根目录 `.env`；终端已有环境变量优先。`.env` 已被 Git 忽略，模板见 [.env.example](.env.example)。填写 `TAVILY_API_KEY`、`XHS_IMAGE_API_KEY` 等实际密钥后，文件中的 `XHS_LLM_CONFIG` 和 `XHS_EXECUTION_CONFIG` 会自动指定两个 JSON，启动命令可简化为：
+CLI 和 Web 工厂启动时通过 `load_dotenv(override=False)` 读取项目根目录 `.env`；终端已有环境变量优先。`.env` 已被 Git 忽略。填写 `TAVILY_API_KEY`、`DASHSCOPE_API_KEY` 等实际密钥后，文件中的 `XHS_LLM_CONFIG` 和 `XHS_EXECUTION_CONFIG` 会自动指定两个 JSON，启动命令可简化为：
 
 ```powershell
 uv run --extra web --extra browser xhs web
@@ -226,25 +234,47 @@ src/xhs_agent/
     creation.py       # 创作 Agent：草稿与图片引用
     review.py         # 审核 Agent：问题与审核报告
     publishing.py     # 发布适配器：发布结果
-  graph.py            # Agent 子图、人工中断、有限返工
-  service.py          # 组装、任务操作、失败重试与导出
+    collaboration.py  # 统一委派、执行结果、父 Agent 决策与选题确认
+  graph.py            # 父 Agent 决策、委派、条件边与图编译
+  human.py            # 人工选题、问答、修改、批准与取消节点
+  service.py          # 任务操作、失败重试、平台服务与导出
+  workflow.py         # 检查点展示与人工操作门禁
+  memory.py           # 工作上下文、独立执行存档与偏好快照
   storage.py          # 数据迁移、快照、版本与发布记录
+  team_store.py       # 委派账本与不可变产物
   artifacts.py        # 按任务/版本归档
   profiles.py         # JSON 画像加载
   providers.py        # 热点工具契约
-  config.py           # 流程设置
+  config.py           # 各角色模型与运行模式
+  execution.py        # 通用执行预算、提示词、工具与外部服务配置
   llm/                # 统一模型接口、OpenAI/Anthropic 适配与厂商工厂
   platforms/          # 平台连接器、账号会话、预检与持久化发布作业；首版小红书
   skills/             # 技能登记、角色访问器、按需加载和本地导入
   cli.py              # 命令行入口
   agents/
     base.py           # Agent 与发布适配器协议
+    model.py          # 公共 Provider 初始化、凭据隔离与资源关闭
+    factory.py        # 根据配置或注入创建各角色实例
+    registry.py       # 注册目录、技能/工具权限与协议校验
+    decisions.py      # 父 Agent 决策解析与权威产物引用补齐
+    supervisor.py     # 真实父 Agent 与显式离线协调器
+    delegation.py     # 统一委派到专业业务接口的适配
     ideation.py       # 真实模型选题与显式 Mock 选题
-    runtime.py        # LangGraph 模型/Skill 工具循环、输出修正与调用上限
-    research/         # Mock 资料整理与搜索协议
+    structured.py     # 专业模型公共执行入口及调研、创作、审核实现
+    runtime.py        # 模型/工具循环、输出修正、预算与消息存档
+    tools.py          # 授权工具定义与 Skill 读取工具
+    images.py         # 图片生成/编辑、视觉输入与委派内图片目录
+    research/         # Mock 资料整理、搜索协议、Tavily 与分页读取
     creation.py       # Mock 创作
     review.py         # 本地规则审核
     publishing.py     # Mock 发布
+  web/
+    app.py            # HTTP 任务、画像、媒体与事件入口
+    settings.py       # Web 模型设置、配置来源与凭据复制
+    models.py         # HTTP 请求模型
+    jobs.py           # 后台作业执行
+    repository.py     # Web 元数据、幂等请求与事件持久化
+    credentials.py    # 本地凭据加密
 examples/             # 画像与热点文件示例
 skills/               # 注册表、外部技能原文、共享资料和许可证
 tests/                # 流程、恢复、迁移、返工与发布测试

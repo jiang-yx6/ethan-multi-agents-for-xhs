@@ -45,6 +45,7 @@ export function NewTask({
           content_type: fields.get("content_type"),
           use_trends: Boolean(fields.get("use_trends")),
           needs_research: Boolean(fields.get("needs_research")),
+          generate_images: Boolean(fields.get("generate_images")),
           supplied_materials: lines(String(fields.get("materials") || "")),
           constraints: lines(String(fields.get("constraints") || "")),
         },
@@ -115,6 +116,10 @@ export function NewTask({
           <label className="checkbox-line">
             <input type="checkbox" name="needs_research" />
             整理外部资料（当前为 Mock 检索）
+          </label>
+          <label className="checkbox-line">
+            <input type="checkbox" name="generate_images" />
+            由创作 Agent 生成配图
           </label>
           <label htmlFor="new-constraints">本次约束（每行一条）</label>
           <textarea

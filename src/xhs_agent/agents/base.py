@@ -12,9 +12,6 @@ from ..models import (
 )
 from ..models.collaboration import DelegationResult, DelegationTask, SupervisorContext, SupervisorDecision
 
-SKILL_READ_TOOLS = SKILL_TOOLS
-
-
 class SkillEnabledAgent:
     """服务层绑定角色读取接口；具体模型可将 catalog_prompt 与工具接入调用。"""
 
@@ -28,7 +25,7 @@ class SkillEnabledAgent:
 
     @property
     def allowed_tools(self) -> tuple[str, ...]:
-        return getattr(self, "_allowed_tools", getattr(self, "available_tools", SKILL_READ_TOOLS))
+        return getattr(self, "_allowed_tools", getattr(self, "available_tools", SKILL_TOOLS))
 
     @property
     def skills(self) -> AgentSkills:

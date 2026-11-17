@@ -4,37 +4,41 @@
       "ideation": {
         "prompt": "以用户目标为先，选题要有具体角度。",
         "tools": ["load_skill", "read_skill_resource"],
-        "max_model_calls": 6
+        "max_model_calls": null
       },
       "research": {
         "prompt": "优先寻找原始公告和一手资料，区分已证实事实与待确认内容。",
         "tools": ["load_skill", "read_skill_resource", "web_search", "web_fetch"],
-        "max_model_calls": 10,
-        "max_tool_calls": 16
+        "max_model_calls": null,
+        "max_tool_calls": null
       },
       "creation": {
         "prompt": "文案符合用户画像，配图与内容一致；修改时落实具体反馈。",
         "tools": ["load_skill", "read_skill_resource", "generate_image"],
         "supports_vision": false,
-        "max_model_calls": 10
+        "max_model_calls": null
       },
       "review": {
-        "prompt": "对照用户要求、输入素材和证据给出具体问题，不替用户批准。",
+        "prompt": "采用宽松审核：内容基本完整、可读并回应主题即可通过；普通优化只给 warning，不因风格偏好要求返工，也不替用户批准。",
         "tools": ["load_skill", "read_skill_resource", "run_rules"],
-        "max_model_calls": 8
+        "max_model_calls": 4,
+        "max_tool_calls": 8,
+        "max_output_retries": 1
       }
     },
     "search": {
       "provider": "tavily",
       "base_url": "https://api.tavily.com",
       "api_key_env": "TAVILY_API_KEY",
+      "max_search_calls": 3,
+      "max_fetch_calls": 5,
       "timeout": 60
     },
     "images": {
-      "provider": "openai",
-      "base_url": "https://api.openai.com/v1",
-      "api_key_env": "XHS_IMAGE_API_KEY",
-      "model": "REPLACE_WITH_YOUR_IMAGE_MODEL",
+      "provider": "dashscope",
+      "base_url": "https://ws-lhgbypum7gavxaa9.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "model": "qwen-image-3.0",
       "size": "1024x1536",
       "supports_edit": true,
       "timeout": 180

@@ -2,6 +2,32 @@
   grid-template-columns: 172px minmax(0, 1.1fr) minmax(330px, 1fr);
   align-items: stretch;
 }
+.idea-selection {
+  margin: 18px 0;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+}
+.idea-selection-heading h3 { margin: 6px 0; font: 24px var(--display); }
+.idea-selection-heading p, .idea-choice-content small { color: var(--muted); font-size: 12px; }
+.idea-selection fieldset { border: 0; padding: 0; margin: 18px 0; display: grid; gap: 10px; min-width: 0; }
+.idea-choice {
+  display: flex; align-items: flex-start; gap: 10px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 8px; padding: 14px;
+  transition: border-color 160ms, background 160ms;
+}
+.idea-choice.selected { border-color: var(--ink); background: #e9eee3; }
+.idea-choice input { flex: 0 0 auto; width: auto; margin-top: 5px; accent-color: var(--ink); }
+.idea-choice-number { color: var(--muted); font: 21px var(--display); }
+.idea-choice-content { display: grid; gap: 5px; min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+.idea-choice-content strong { font-size: 16px; color: var(--ink); }
+.idea-regenerate { display: grid; gap: 10px; margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
+.idea-regenerate label { font-size: 13px; font-weight: 600; }
+.idea-regenerate .button { justify-self: start; }
+.idea-regenerate textarea { width: 100%; resize: vertical; }
+.conversation-composer.choosing-idea > textarea,
+.conversation-composer.choosing-idea .composer-footer > button { display: none; }
 .collaboration-workspace > .task-column {
   max-height: calc(100dvh - 260px);
   overflow-y: auto;
@@ -462,6 +488,43 @@
 .artifact-prose {
   white-space: pre-wrap;
   line-height: 1.9;
+}
+.source-ledger {
+  display: grid;
+  gap: 7px;
+  margin-top: 7px;
+}
+.source-entry {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 9px;
+  border: 1px solid color-mix(in srgb, var(--green) 20%, var(--line));
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--green) 4%, #fff);
+}
+.source-entry > span {
+  color: var(--green);
+  font: 10px var(--display);
+  letter-spacing: 0.08em;
+}
+.source-entry a,
+.source-entry strong {
+  display: block;
+  color: var(--ink);
+  font-weight: 600;
+  line-height: 1.45;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.source-entry small {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .all-artifacts {
   margin-top: 22px;

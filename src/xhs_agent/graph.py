@@ -1,19 +1,20 @@
 """主 Agent 决策节点 + 条件边；专业执行和人工输入后都回到主 Agent。"""
 from typing import TypedDict
+import re
 
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Command, interrupt
 
 from .agents.base import Publisher
-from .artifacts import archive_task
 from .conversation import conversation_messages, decision_message
 from .storage import Store
 from .models import (
-    ArtifactReference, AskUserDecision, DelegationRecord, DelegationTask, Draft, DraftContent,
+    DelegateDecision, DelegationRecord, DelegationTask, Draft, IdeaSelection,
     FinishDecision, ReviewReport, SupervisorContext,
 )
 from .team_store import TeamStore
 from .flow_log import trace_node
+from .human import HumanNodes
+from .memory import current_context
 
 
 class TeamState(TypedDict, total=False):
@@ -27,6 +28,10 @@ class TeamState(TypedDict, total=False):
     replacement: dict
     summary: str
     conversation: list[dict]
+    idea_selection: dict
+    regeneration_source: dict
+    idea_feedback: str
+    selection_required: bool
 
 
 class PublishState(TypedDict, total=False):
@@ -78,13 +83,43 @@ def compile_graph(store, registry, supervisor, publisher, checkpointer, config, 
         current = store.get_task(state["task_id"])
         # 当前可用产物只保留每类最新版本；历史仍记录之前的委派与结果。
         latest = {ref.kind: ref for ref in artifacts.artifacts(state["task_id"])}
+        selection = IdeaSelection.model_validate(state["idea_selection"]) if state.get("idea_selection") else None
+        if selection and selection.candidates != latest.get("ideas"):
+            selection = None
+        if "ideas" in latest and selection is None:
+            latest.pop("idea", None)
         return SupervisorContext(
             task_id=current.task_id, request=current.request, profile=current.profile,
             available_agents=registry.catalog(), artifacts=tuple(latest.values()),
             history=tuple(DelegationRecord.model_validate(record) for record in state.get("history", [])),
             user_messages=tuple(state.get("user_messages", [])),
-            remaining_rounds=max(0, config.team_max_rounds - state.get("rounds", 0)),
+            remaining_rounds=(max(0, config.team_max_rounds - state.get("rounds", 0))
+                              if config.team_max_rounds is not None else None),
+            idea_selection=selection,
+            long_term_preferences=tuple(current_context().preferences if current_context() else
+                                        store.preferences(store.memory_scope(current.task_id))["preferences"]),
+            control_state={"status": current.status, "current_version": current.current_version,
+                           "approved": bool(current.draft and current.draft.approved),
+                           "approved_version": current.current_version if current.draft and current.draft.approved else None,
+                           "pending_revision": next((text for text in reversed(state.get("user_messages", []))
+                                                     if (match := re.match(r"修改 v(\d+)：", text))
+                                                     and current.current_version <= int(match.group(1))), None)},
+            idea_feedback=state.get("idea_feedback") if state.get("regeneration_source") == (
+                latest["ideas"].model_dump(mode="json") if "ideas" in latest else None) else None,
         )
+
+    def needs_selection(state):
+        ctx = context(state)
+        return any(ref.kind == "ideas" for ref in ctx.artifacts) and ctx.idea_selection is None and not ctx.idea_feedback
+
+    def selection_update(state):
+        ref = next(ref for ref in context(state).artifacts if ref.kind == "ideas")
+        messages = conversation_messages(state)
+        message_id = f"selection-request:{ref.artifact_id}:{ref.version}"
+        if not any(item["id"] == message_id for item in messages):
+            messages.append({"id": message_id, "role": "assistant", "kind": "select_idea",
+                             "content": "候选选题已准备好。请选择一个选题，或说明要求后重新生成。"})
+        return {"selection_required": True, "conversation": messages}
 
     def validate_decision(value, ctx):
         decision = registry.validate_decision(value, ctx)
@@ -99,18 +134,18 @@ def compile_graph(store, registry, supervisor, publisher, checkpointer, config, 
                     raise ValueError("审核产物正文与当前草稿版本不一致")
                 if not any(ref.kind == "draft" and ref.version == current.current_version for ref in decision.artifacts):
                     raise ValueError("结束决策必须引用当前版本的 draft")
-                changes = [message for message in ctx.user_messages if message.startswith("修改 v")]
-                if changes:
-                    version = int(changes[-1].split("：", 1)[0].removeprefix("修改 v"))
-                    if current.current_version <= version:
-                        raise ValueError("用户要求的修改尚未产生新版本")
+                if ctx.control_state["pending_revision"]:
+                    raise ValueError("用户要求的修改尚未产生新版本")
         return decision
 
     if hasattr(supervisor, "validate_decision"):
         supervisor.validate_decision = validate_decision
 
     def coordinate(state):
-        if state.get("rounds", 0) >= config.team_max_rounds:
+        # 也保护升级前已经停在 supervisor 的检查点；此处不调用模型。
+        if needs_selection(state):
+            return selection_update(state)
+        if config.team_max_rounds is not None and state.get("rounds", 0) >= config.team_max_rounds:
             raise RuntimeError("主 Agent 协作轮次已达上限；请检查执行记录或提高 team_max_rounds 后重试")
         ctx = context(state)
         turn = state.get("turn", 0)
@@ -124,12 +159,20 @@ def compile_graph(store, registry, supervisor, publisher, checkpointer, config, 
               "delegation_id": decision.task.delegation_id if decision.action == "delegate" else None,
               "idea_index": decision.task.idea_index if decision.action == "delegate" else None,
               "question": decision.question if decision.action == "ask_user" else None})
-        return {"decision": encoded, "turn": turn + 1, "rounds": state.get("rounds", 0) + 1,
+        return {"selection_required": False, "decision": encoded, "turn": turn + 1, "rounds": state.get("rounds", 0) + 1,
                 "conversation": [*conversation_messages(state), decision_message(encoded, turn)]}
 
     def execute(state):
         task = DelegationTask.model_validate(state["decision"]["task"])
+        # 若选题结果已经落库但图检查点提交失败，先补齐本次委派历史，再进入人工节点。
+        if needs_selection(state) and task.target_agent != "ideation":
+            return selection_update(state)
         registry.validate_delegation(task)
+        # 重放旧检查点时同样不能绕过人工确认或更换用户选定的序号。
+        ctx = context(state)
+        if ctx.idea_selection or ctx.idea_feedback:
+            # validate_decision 的委派 ID 检查只用于新决策；当前待执行任务尚未记入历史。
+            registry.validate_decision(DelegateDecision(action="delegate", reason="执行前校验", task=task), ctx)
         for ref in task.input_artifacts:
             artifacts.resolve(ref)
         _, result = artifacts.begin(task)
@@ -150,23 +193,8 @@ def compile_graph(store, registry, supervisor, publisher, checkpointer, config, 
               "summary": result.summary, "failure_reason": result.failure_reason,
               "missing_information": list(result.missing_information),
               "artifacts": [ref.model_dump(mode="json") for ref in result.artifacts]})
-        return {"history": history, "draft": current.draft.model_dump(mode="json") if current.draft else {}}
-
-    def ask(state):
-        decision = AskUserDecision.model_validate(state["decision"])
-        answer = interrupt({"kind": "ask_user", "task_id": state["task_id"],
-                            "question": decision.question, "missing_information": list(decision.missing_information),
-                            "hint": "answer / cancel"})
-        if isinstance(answer, dict) and answer.get("action") == "cancel":
-            return Command(goto="cancelled")
-        if not isinstance(answer, dict) or not isinstance(answer.get("answer"), str) or not answer["answer"].strip():
-            raise ValueError("用户回复不能为空")
-        message = f"问题：{decision.question}\n用户回复：{answer['answer'].strip()}"
-        return Command(goto="supervisor", update={
-            "user_messages": [*state.get("user_messages", []), message], "rounds": 0,
-            "conversation": [*conversation_messages(state), {"id": f"user:{state['turn']}:answer",
-                              "role": "user", "kind": "answer", "content": answer["answer"].strip()}],
-        })
+        return {"history": history, "draft": current.draft.model_dump(mode="json") if current.draft else {},
+                **(selection_update(state) if needs_selection(state) else {"selection_required": False})}
 
     def finish(state):
         decision = FinishDecision.model_validate(state["decision"])
@@ -175,81 +203,24 @@ def compile_graph(store, registry, supervisor, publisher, checkpointer, config, 
         return {"summary": decision.summary,
                 "draft": task.draft.model_dump(mode="json") if task.draft else {}}
 
-    def human_gate(kind):
-        def node(state):
-            version = state["draft"]["version"]
-            answer = interrupt({"kind": kind, "task_id": state["task_id"], "version": version,
-                                "hint": "approve / request_changes / replace_draft / cancel" if kind == "review"
-                                else "publish / request_changes / replace_draft / cancel"})
-            action = answer.get("action")
-            if action == "cancel":
-                return Command(goto="cancelled")
-            if action == "approve" and kind == "review":
-                return Command(goto="mark_approved")
-            if action == "publish" and kind == "publish_gate":
-                return Command(goto="publish")
-            if action == "message":
-                text = answer.get("text", "").strip()
-                if not text:
-                    raise ValueError("消息不能为空")
-                store.revoke_approval(state["task_id"])
-                draft = store.get_task(state["task_id"]).draft
-                return Command(goto="supervisor", update={"rounds": 0,
-                    "draft": draft.model_dump(mode="json"),
-                    "user_messages": [*state.get("user_messages", []), f"对话 v{version}：{text}"],
-                    "conversation": [*conversation_messages(state), {"id": f"user:{state['turn']}:message",
-                                      "role": "user", "kind": "message", "content": text}]})
-            if action == "request_changes":
-                text = answer.get("comment", "").strip()
-                if not text:
-                    raise ValueError("修改意见不能为空")
-                return Command(goto="supervisor", update={"rounds": 0, "user_messages": [
-                    *state.get("user_messages", []), f"修改 v{version}：{text}",
-                ], "conversation": [*conversation_messages(state), {"id": f"user:{state['turn']}:changes",
-                                    "role": "user", "kind": "changes", "content": text}]})
-            if action == "replace_draft":
-                return Command(goto="replace_draft", update={"replacement": answer["draft"], "rounds": 0})
-            raise ValueError("未知人工操作")
-        return node
-
-    def replace_draft(state):
-        version = int(state["draft"]["version"]) + 1
-        draft = store.get_draft(state["task_id"], version)
-        if draft is None:
-            content = DraftContent.model_validate(state["replacement"])
-            draft = Draft(**content.model_dump(), version=version)
-            store.save_draft(state["task_id"], draft)
-        archive_task(store.get_task(state["task_id"]), store.db_path.parent / "outputs")
-        artifacts.put_artifact(ArtifactReference(task_id=state["task_id"], artifact_id=f"manual:{draft.version}",
-                                                 kind="draft", version=draft.version,
-                                                 summary=f"用户替换的草稿 v{draft.version}：{draft.title}\n{draft.body[:1200]}"),
-                               draft.model_dump(mode="json"))
-        return {"draft": draft.model_dump(mode="json"), "replacement": {}}
-
-    def mark_approved(state):
-        store.approve_draft(state["task_id"], int(state["draft"]["version"]))
-        return {}
-
-    def cancelled(state):
-        store.update_status(state["task_id"], "cancelled")
-        return {}
-
+    human = HumanNodes(store, artifacts, context, emit)
     builder = StateGraph(TeamState)
     builder.add_node("supervisor", trace_node("supervisor", coordinate, emit, agent_id="supervisor"))
     builder.add_node("execute_agent", trace_node("execute_agent", execute, emit))
-    builder.add_node("ask_user", trace_node("ask_user", ask, emit), destinations=("supervisor", "cancelled"))
+    builder.add_node("ask_user", trace_node("ask_user", human.ask, emit), destinations=("supervisor", "cancelled"))
+    builder.add_node("select_idea", trace_node("select_idea", human.select_idea, emit), destinations=("supervisor", "cancelled"))
     builder.add_node("finish", trace_node("finish", finish, emit, agent_id="supervisor"))
-    builder.add_node("review", trace_node("review", human_gate("review"), emit), destinations=("supervisor", "replace_draft", "mark_approved", "cancelled"))
-    builder.add_node("publish_gate", trace_node("publish_gate", human_gate("publish_gate"), emit), destinations=("supervisor", "replace_draft", "publish", "cancelled"))
-    builder.add_node("replace_draft", trace_node("replace_draft", replace_draft, emit))
-    builder.add_node("mark_approved", trace_node("mark_approved", mark_approved, emit))
+    builder.add_node("review", trace_node("review", human.human_gate("review"), emit), destinations=("supervisor", "replace_draft", "mark_approved", "cancelled"))
+    builder.add_node("publish_gate", trace_node("publish_gate", human.human_gate("publish_gate"), emit), destinations=("supervisor", "replace_draft", "publish", "cancelled"))
+    builder.add_node("replace_draft", trace_node("replace_draft", human.replace_draft, emit))
+    builder.add_node("mark_approved", trace_node("mark_approved", human.mark_approved, emit))
     builder.add_node("publish", build_publish_graph(publisher, store, emit))
-    builder.add_node("cancelled", trace_node("cancelled", cancelled, emit))
+    builder.add_node("cancelled", trace_node("cancelled", human.cancelled, emit))
     builder.add_edge(START, "supervisor")
-    builder.add_conditional_edges("supervisor", lambda state: state["decision"]["action"], {
-        "delegate": "execute_agent", "ask_user": "ask_user", "finish": "finish",
+    builder.add_conditional_edges("supervisor", lambda state: "select_idea" if state.get("selection_required") else state["decision"]["action"], {
+        "delegate": "execute_agent", "ask_user": "ask_user", "finish": "finish", "select_idea": "select_idea",
     })
-    builder.add_edge("execute_agent", "supervisor")
+    builder.add_conditional_edges("execute_agent", lambda state: "select_idea" if state.get("selection_required") else "supervisor")
     builder.add_edge("replace_draft", "supervisor")
     builder.add_conditional_edges("finish", lambda state: "review" if state.get("draft") else "done",
                                   {"review": "review", "done": END})

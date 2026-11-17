@@ -134,7 +134,7 @@ def test_web_limit_change_reaches_anthropic_request_and_recovers_truncated_revie
             "content": [{"type": "text", "text": '{"issues":[' if short else json.dumps({"draft_version": version, "issues": []})}],
             "stop_reason": "max_tokens" if short else "end_turn", "usage": {"input_tokens": 100, "output_tokens": 20}})
 
-    monkeypatch.setattr("xhs_agent.agents.structured.create_llm_provider",
+    monkeypatch.setattr("xhs_agent.agents.model.create_llm_provider",
                         lambda config: create_llm_provider(config, transport=httpx.MockTransport(handle)))
     config = AgentConfig(supervisor_backend="mock", ideation_backend="mock")
     with TestClient(create_app(tmp_path, config=config)) as client:
@@ -159,6 +159,8 @@ def test_web_limit_change_reaches_anthropic_request_and_recovers_truncated_revie
 
 
 def test_supervisor_validation_diagnostics_are_persisted_without_raw_output(tmp_path, monkeypatch):
+    from xhs_agent.agents.supervisor import LLMSupervisorAgent
+
     class Provider:
         def chat(self, request):
             return ChatResponse(provider="offline", model="test", finish_reason="stop", message=ChatMessage(
@@ -167,9 +169,14 @@ def test_supervisor_validation_diagnostics_are_persisted_without_raw_output(tmp_
         def close(self):
             pass
 
-    monkeypatch.setattr("xhs_agent.agents.supervisor.create_llm_provider", lambda config: Provider())
+    monkeypatch.setattr("xhs_agent.agents.model.create_llm_provider", lambda config: Provider())
     config = AgentConfig(ideation_backend="mock", supervisor_llm=LLMConfig(provider="openai", model="test"))
-    with TestClient(create_app(tmp_path, config=config)) as client:
+
+    def factory(config, on_event):
+        return TaskService(tmp_path, config=config, on_event=on_event, supervisor_agent=LLMSupervisorAgent(
+            config=config.supervisor_llm, on_event=on_event, max_output_retries=2))
+
+    with TestClient(create_app(tmp_path, config=config, service_factory=factory)) as client:
         job = wait_job(client, client.post("/api/tasks", json={"request_id": str(uuid.uuid4()),
             "request": {"goal": "整理散步素材", "topic": "散步"}}), "failed")
         snapshot = client.get("/api/jobs/" + job["job_id"]).json()
@@ -180,7 +187,7 @@ def test_supervisor_validation_diagnostics_are_persisted_without_raw_output(tmp_
         assert "union_tag_invalid" in job["error"]
         assert "invalid-secret-tag" not in json.dumps(snapshot) and "never-echo-model-output" not in json.dumps(snapshot)
         task_id = job["task_id"]
-    with TestClient(create_app(tmp_path, config=config)) as client:
+    with TestClient(create_app(tmp_path, config=config, service_factory=factory)) as client:
         assert "union_tag_invalid" in client.get(f"/api/tasks/{task_id}").json()["task"]["last_error"]
         assert len([event for event in client.get("/api/jobs/" + job["job_id"]).json()["events"]
                     if event["kind"] == "output_validation"]) == 3

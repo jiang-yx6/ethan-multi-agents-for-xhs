@@ -90,6 +90,10 @@ class JobRunner:
                 result = service.request_changes(task_id, params["comment"], **resume)
             elif kind == "answer":
                 result = service.answer(task_id, params["answer"], **resume)
+            elif kind in {"select_idea", "regenerate_ideas"}:
+                source = {"ideas_artifact_id": params["ideas_artifact_id"], "ideas_version": params["ideas_version"]}
+                result = (service.select_idea(task_id, params["idea_index"], **source, **resume) if kind == "select_idea"
+                          else service.regenerate_ideas(task_id, params["feedback"], **source, **resume))
             elif kind == "message":
                 result = service.message(task_id, params["text"], **resume)
             elif kind == "publish":

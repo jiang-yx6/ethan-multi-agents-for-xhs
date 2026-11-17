@@ -1,8 +1,8 @@
 """按 Agent 职责组织模型，并通过包入口统一导出。"""
 from .base import AGENT_ROLES, AgentRole, ContentRequest, SpecialistRole, TaskView, TrendItem, UserProfile, WorkflowInterrupt, WorkflowView, utcnow
 from .collaboration import (
-    AgentDefinition, ArtifactReference, AskUserDecision, DelegateDecision, DelegationRecord,
-    DelegationResult, DelegationTask, FinishDecision, SupervisorContext, SupervisorDecision,
+    AgentDefinition, ArtifactReference, ArtifactSelector, AskUserDecision, DelegateDecision, DelegationRecord,
+    DelegationResult, DelegationTask, FinishDecision, IdeaSelection, SupervisorContext, SupervisorDecision,
 )
 from .creation import Draft, DraftContent, ImageRef
 from .ideation import IdeaCandidate
@@ -27,10 +27,12 @@ __all__ = [
     "SpecialistRole",
     "AgentDefinition",
     "ArtifactReference",
+    "ArtifactSelector",
     "DelegationTask",
     "DelegationResult",
     "DelegationRecord",
     "SupervisorContext",
+    "IdeaSelection",
     "SupervisorDecision",
     "DelegateDecision",
     "AskUserDecision",

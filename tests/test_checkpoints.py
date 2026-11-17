@@ -1,4 +1,4 @@
-"""严格类型注册、旧编码读取以及模型子图的暂停恢复。"""
+"""严格类型注册、旧编码读取、父图恢复与模型消息独立存档。"""
 import json
 
 import pytest
@@ -57,14 +57,14 @@ def test_checkpoint_serializer_does_not_restore_arbitrary_project_types():
     assert not isinstance(restored, UnregisteredModel)
 
 
-def test_model_subgraph_checkpoints_reload_and_resume_after_service_restart(tmp_path, caplog):
+def test_parent_resumes_after_restart_without_duplicating_runtime_messages_in_checkpoints(tmp_path, caplog):
     class Provider:
         def __init__(self, decision):
             self.decision = decision
 
         def chat(self, request):
-            return ChatResponse(provider="offline", model="test", finish_reason="stop",
-                                message=ChatMessage(role="assistant", content=json.dumps(self.decision)))
+            return ChatResponse(provider="offline", model="test", finish_reason="stop", message=ChatMessage(
+                role="assistant", content=json.dumps(self.decision), reasoning_content="private-model-reasoning"))
 
     config = AgentConfig(supervisor_backend="mock", ideation_backend="mock")
     question = {"action": "ask_user", "reason": "缺少路线", "question": "走过哪里？", "missing_information": ["路线"]}
@@ -74,9 +74,11 @@ def test_model_subgraph_checkpoints_reload_and_resume_after_service_restart(tmp_
         assert task.status == "waiting_input"
         with svc._open_graph(task.task_id) as graph:
             records = list(graph.checkpointer.list(None))
-        # 实际子图消息确实写入了 SQLite，并通过父图注册的序列化器恢复为模型。
-        messages = [message for record in records for message in record.checkpoint["channel_values"].get("messages", [])]
-        assert messages and all(isinstance(message, ChatMessage) for message in messages)
+        assert records and all("messages" not in record.checkpoint["channel_values"] for record in records)
+        archives = svc.context_archive(task.task_id)["runs"]
+        assert len(archives) == 1 and archives[0]["status"] == "completed"
+        assert len(archives[0]["messages"]) == 3
+        assert "private-model-reasoning" not in json.dumps(archives)
     finally:
         svc.close()
 
@@ -85,6 +87,7 @@ def test_model_subgraph_checkpoints_reload_and_resume_after_service_restart(tmp_
     try:
         assert svc.workflow(task.task_id).status == "waiting_input"
         assert svc.answer(task.task_id, "走过江边步道").status == "completed"
+        assert len(svc.context_archive(task.task_id)["runs"]) == 2
     finally:
         svc.close()
     assert not any("unregistered type" in record.message or "Blocked deserialization" in record.message for record in caplog.records)

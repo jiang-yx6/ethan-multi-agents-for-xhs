@@ -69,6 +69,17 @@ def test_openai_request_headers_and_normalized_response():
     assert response.finish_reason == "stop"
 
 
+def test_openai_sends_configured_reasoning_effort():
+    def handle(incoming):
+        body = json.loads(incoming.content)
+        assert body["reasoning_effort"] == "low"
+        return httpx.Response(200, json=openai_response())
+
+    with create_llm_provider("deepseek", model="deepseek-flash", api_key="test-key",
+                             reasoning_effort="low", transport=httpx.MockTransport(handle)) as provider:
+        assert provider.chat(request()).text == "选题结果"
+
+
 def test_anthropic_request_and_system_extraction():
     def handle(incoming):
         body = json.loads(incoming.content)
@@ -226,6 +237,21 @@ def test_malformed_or_unoffered_tool_responses_fail(payload):
                              transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload))) as provider:
         with pytest.raises(LLMResponseError):
             provider.chat(request())
+
+
+def test_exhausted_historical_tool_is_returned_to_runtime_for_local_blocking():
+    previous = ChatMessage(role="assistant", tool_calls=[ToolCall(
+        id="old", name="web_fetch", arguments={"url": "https://example.org"})])
+    history = [ChatMessage(role="user", content="任务"), previous,
+               ChatMessage(role="tool", tool_call_id="old", content="正文")]
+    payload = openai_response(choices=[{"finish_reason": "stop", "message": {
+        "role": "assistant", "content": None, "tool_calls": [{
+            "id": "retry", "type": "function", "function": {
+                "name": "web_fetch", "arguments": '{"url":"https://example.org"}'}}]}}])
+    with create_llm_provider("openai", model="test", api_key="key",
+                             transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload))) as provider:
+        response = provider.chat(ChatRequest(messages=history, tools=[], tool_choice="none"))
+    assert response.finish_reason == "tool_calls" and response.message.tool_calls[0].name == "web_fetch"
 
 
 def test_protected_options_cannot_override_protocol_fields():

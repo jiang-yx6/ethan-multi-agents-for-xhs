@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
 import uuid
 from contextlib import contextmanager
 from collections.abc import Callable
@@ -12,25 +13,19 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from .agents.base import CreationAgent, IdeationAgent, Publisher, ResearchAgent, ReviewAgent
-from .agents.creation import MockCreationAgent
-from .agents.ideation import LLMIdeationAgent, MockIdeationAgent
-from .agents.publishing import MockPublisher
-from .agents.research import MockResearchAgent
-from .agents.review import RuleReviewAgent
+from .agents.factory import create_agents
+from .agents.model import ModelAgent
 from .agents.registry import build_agent_registry
 from .agents.delegation import SpecialistDelegate
-from .agents.supervisor import LLMSupervisorAgent, MockSupervisorAgent
-from .agents.structured import LLMCreationAgent, LLMResearchAgent, LLMReviewAgent, StructuredModelAgent
-from .agents.images import OpenAIImageProvider
-from .agents.research.search import TavilySearchProvider
 from .artifacts import archive_task
 from .checkpoints import checkpoint_serializer
 from .config import AgentConfig
 from .conversation import conversation_messages
 from .graph import compile_graph
 from .flow_log import FlowLog, error_details
+from .memory import context_session
 from .team_store import TeamStore
-from .models import ContentRequest, DraftContent, IdeaCandidate, TaskView, TrendItem, UserProfile, WorkflowView
+from .models import ArtifactReference, ContentRequest, DraftContent, IdeaCandidate, TaskView, TrendItem, UserProfile, WorkflowView
 from .platforms import AccountRef, AccountService, PlatformPublisher, PlatformPublishingService, PlatformStore, create_platform_connector
 from .platforms.content import draft_fingerprint, local_image_path
 from .providers import EmptyTrendProvider, TrendProvider
@@ -60,48 +55,28 @@ class TaskService:
         self.store = Store(self.data_dir / "store.db")
         self.config = config or AgentConfig()
         self.flow_log = FlowLog(self.data_dir, self.config)
-        execution = self.config.execution
-        search_provider = search_provider or (TavilySearchProvider(execution.search) if execution.search else None)
-        image_provider = image_provider or (OpenAIImageProvider(execution.images, self.data_dir / "generated-images")
-                                            if execution.images else None)
         self.on_event = on_event
-        self.ideation_agent = ideation_agent if ideation_agent is not None else (
-            MockIdeationAgent() if self.config.ideation_backend == "mock" else LLMIdeationAgent(
-                config=self.config.ideation_llm, max_model_calls=self.config.ideation_max_model_calls,
-                max_tool_calls=self.config.ideation_max_tool_calls,
-                max_output_retries=self.config.ideation_max_output_retries,
-                execution=execution.roles.get("ideation"),
-                on_event=on_event,
-            ))
-        self.research_agent = research_agent or (LLMResearchAgent(config=self.config.research_llm, on_event=on_event,
-                                                execution=execution.for_role("research"), search_provider=search_provider)
-                                                if self.config.research_backend == "llm" else MockResearchAgent())
-        self.creation_agent = creation_agent or (LLMCreationAgent(config=self.config.creation_llm, on_event=on_event,
-                                                execution=execution.for_role("creation"), image_provider=image_provider)
-                                                if self.config.creation_backend == "llm" else MockCreationAgent())
-        self.publisher = publisher or MockPublisher(self.store)
-        self.review_agent = review_agent or (LLMReviewAgent(config=self.config.review_llm, on_event=on_event,
-                                            execution=execution.for_role("review"))
-                                            if self.config.review_backend == "llm" else RuleReviewAgent())
         self.trend_provider = trend_provider or EmptyTrendProvider()
         self._connector_factory = connector_factory
         self._platform_store: PlatformStore | None = None
-        self.supervisor_agent = supervisor_agent if supervisor_agent is not None else (
-            MockSupervisorAgent() if self.config.supervisor_backend == "mock" else LLMSupervisorAgent(
-                config=self.config.supervisor_llm, on_event=on_event,
-            ))
         try:
+            agents = create_agents(self.config, self.store, overrides={
+                "ideation": ideation_agent, "research": research_agent, "creation": creation_agent,
+                "review": review_agent, "supervisor": supervisor_agent, "publishing": publisher,
+            }, on_event=on_event, search_provider=search_provider, image_provider=image_provider)
+            self.ideation_agent, self.research_agent, self.creation_agent, self.review_agent, self.supervisor_agent = (
+                agents[role] for role in ("ideation", "research", "creation", "review", "supervisor"))
+            self.publisher = agents["publishing"]
+            self._model_agents = tuple(agent for agent in agents.values() if isinstance(agent, ModelAgent))
             if set(delegated_agents or {}) - {"ideation", "research", "creation", "review"}:
                 raise ValueError("只能替换已注册的专业 Agent")
-            agents = {"ideation": self.ideation_agent, "research": self.research_agent,
-                      "creation": self.creation_agent, "review": self.review_agent, "publishing": self.publisher}
             if len({id(agent) for agent in agents.values()}) != len(agents):
                 raise ValueError("不同角色必须使用独立 Agent 实例，避免权限互相覆盖")
             workers = {role: SpecialistDelegate(role, agent, self.store, self.trend_provider)
-                       for role, agent in agents.items() if role != "publishing"}
+                       for role, agent in agents.items() if role not in {"supervisor", "publishing"}}
             self.agent_registry = build_agent_registry(self.skill_library, {
                 **workers, **(delegated_agents or {}), "supervisor": self.supervisor_agent, "publishing": self.publisher,
-            }, execution=execution)
+            }, execution=self.config.execution)
         except Exception:
             self.store.close()
             raise
@@ -124,10 +99,12 @@ class TaskService:
 
     def _config(self, task_id: str) -> dict:
         return {"configurable": {"thread_id": task_id},
-                "recursion_limit": max(60, self.config.team_max_rounds * 3 + 20)}
+                "recursion_limit": (max(60, self.config.team_max_rounds * 3 + 20)
+                                    if self.config.team_max_rounds is not None else sys.maxsize)}
 
     def _execute(self, task_id: str, value) -> TaskView:
-        with self.flow_log.run(task_id, uuid.uuid4().hex):
+        with self.flow_log.run(task_id, uuid.uuid4().hex), context_session(
+                self.store, task_id, self.config.execution.context, self.flow_log.redact):
             start = perf_counter()
             self._emit({"kind": "execution_started", "mode": "resume" if isinstance(value, Command)
                         else "retry" if value is None else "start", "message": "开始执行 Agent 流程"})
@@ -176,7 +153,7 @@ class TaskService:
         with self._open_graph(task_id) as graph:
             return describe_workflow(task_id, graph.get_state(self._config(task_id)))
 
-    def validate_resume(self, task_id: str, action: str, interrupt_id: str | None = None) -> str:
+    def _resume_interrupt(self, task_id: str, action: str, interrupt_id: str | None = None):
         task, workflow = self.status(task_id), self.workflow(task_id)
         if len(workflow.interrupts) != 1 or gate_status(task, workflow) != task.status:
             raise WorkflowConflictError("图当前未停在可操作的人工节点，请刷新任务状态")
@@ -185,7 +162,10 @@ class TaskService:
             raise WorkflowConflictError("人工暂停位置已经变化，请刷新后重新操作")
         if action not in pause.actions:
             raise WorkflowConflictError("当前人工暂停节点不支持该操作")
-        return pause.id
+        return pause
+
+    def validate_resume(self, task_id: str, action: str, interrupt_id: str | None = None) -> str:
+        return self._resume_interrupt(task_id, action, interrupt_id).id
 
     def reconcile_task(self, task_id: str) -> bool:
         """只对齐安全的人工门禁；此方法不会运行图或重放业务操作。"""
@@ -206,14 +186,17 @@ class TaskService:
 
     def create_task(self, request: ContentRequest | str,
                     profile: UserProfile | None = None,
-                    trends: list[TrendItem] | None = None) -> TaskView:
-        task = self.register_task(request, profile, trends)
+                    trends: list[TrendItem] | None = None, *, memory_scope: str = "default") -> TaskView:
+        task = self.register_task(request, profile, trends, memory_scope=memory_scope)
         return self.start_task(task.task_id)
 
     def register_task(self, request: ContentRequest | str, profile: UserProfile | None = None,
-                      trends: list[TrendItem] | None = None, *, task_id: str | None = None) -> TaskView:
+                      trends: list[TrendItem] | None = None, *, task_id: str | None = None,
+                      memory_scope: str = "default") -> TaskView:
         """只登记输入快照，供 Web 在模型执行前返回任务标识。"""
         # 保留 create_task("主题") 的 Python 调用方式。
+        if not isinstance(memory_scope, str) or not memory_scope.strip() or len(memory_scope) > 200:
+            raise ValueError("记忆范围必须是 1 到 200 字的非空字符串")
         request = ContentRequest(goal=request, topic=request) if isinstance(request, str) else request
         request = ContentRequest.model_validate(request).model_copy(deep=True)
         for index, source in enumerate(request.input_images):
@@ -225,10 +208,10 @@ class TaskService:
         validated_trends = [TrendItem.model_validate(t).model_dump(mode="json") for t in trends] if trends is not None else None
         task_id = task_id or "xhs-" + uuid.uuid4().hex
         try:
-            self.store.create_task(task_id, request.topic or request.goal, request, profile)
+            self.store.create_task(task_id, request.topic or request.goal, request, profile, memory_scope=memory_scope)
         except sqlite3.IntegrityError:
             existing = self.status(task_id)
-            if existing.request != request or existing.profile != profile:
+            if existing.request != request or existing.profile != profile or self.store.memory_scope(task_id) != memory_scope:
                 raise ValueError("任务标识已绑定其他输入") from None
             return existing
         if validated_trends is not None:
@@ -242,8 +225,15 @@ class TaskService:
 
     def candidate_ideas(self, task_id: str) -> list[IdeaCandidate]:
         self.status(task_id)
-        cached = self.store.get_stage(task_id, "ideas")
+        ledger = TeamStore(self.store)
+        refs = [ref for ref in ledger.artifacts(task_id) if ref.kind == "ideas"]
+        cached = ledger.resolve(refs[-1]) if refs else self.store.get_stage(task_id, "ideas")
         return [IdeaCandidate.model_validate(i) for i in cached or []]
+
+    def context_archive(self, task_id: str) -> dict:
+        self.status(task_id)
+        return {"task_id": task_id, "task_summary": self.store.get_stage(task_id, "context_summary"),
+                "runs": self.store.context_archives(task_id)}
 
     def status(self, task_id: str) -> TaskView:
         task = self.store.get_task(task_id)
@@ -257,11 +247,17 @@ class TaskService:
             return {"mode": "unsupported", "history": [], "artifacts": [], "error": "旧图已移除，请新建父子 Agent 任务"}
         with self._open_graph(task_id) as graph:
             state = graph.get_state(self._config(task_id)).values or {}
+        refs = [ref.model_dump(mode="json") for ref in TeamStore(self.store).artifacts(task_id)]
+        latest_ideas = next((ref for ref in reversed(refs) if ref["kind"] == "ideas"), None)
+        selection = state.get("idea_selection")
+        if selection and selection["candidates"] != latest_ideas:
+            selection = None
         return {"mode": "team", "decision": state.get("decision"), "history": state.get("history", []),
                 "messages": conversation_messages(state),
+                "idea_selection": selection,
                 "user_messages": state.get("user_messages", []), "summary": state.get("summary"),
                 "rounds": state.get("rounds", 0), "turn": state.get("turn", 0),
-                "artifacts": [ref.model_dump(mode="json") for ref in TeamStore(self.store).artifacts(task_id)]}
+                "artifacts": refs}
 
     def artifact(self, task_id: str, artifact_id: str, version: int) -> dict:
         self.status(task_id)
@@ -285,6 +281,34 @@ class TaskService:
             raise ValueError("回复必须是 1 到 10000 字的非空文字")
         pause = self.validate_resume(task_id, "answer", interrupt_id)
         return self._resume(task_id, {"answer": answer.strip()}, pause)
+
+    def validate_idea_action(self, task_id: str, action: str, ideas_artifact_id: str, ideas_version: int,
+                             *, interrupt_id: str | None = None, idea_index: int | None = None) -> str:
+        pause = self._resume_interrupt(task_id, action, interrupt_id)
+        ref = pause.value.get("ideas", {})
+        if (ref.get("artifact_id"), ref.get("version")) != (ideas_artifact_id, ideas_version):
+            raise WorkflowConflictError("候选选题已变化，请刷新后重新操作")
+        if action == "select_idea":
+            candidates = TeamStore(self.store).resolve(ArtifactReference.model_validate(ref))
+            if type(idea_index) is not int or not 0 <= idea_index < len(candidates):
+                raise ValueError("请选择有效的候选选题")
+        return pause.id
+
+    def select_idea(self, task_id: str, idea_index: int, *, ideas_artifact_id: str, ideas_version: int,
+                    interrupt_id: str | None = None) -> TaskView:
+        pause = self.validate_idea_action(task_id, "select_idea", ideas_artifact_id, ideas_version,
+                                         interrupt_id=interrupt_id, idea_index=idea_index)
+        return self._resume(task_id, {"action": "select_idea", "idea_index": idea_index,
+                                     "ideas_artifact_id": ideas_artifact_id, "ideas_version": ideas_version}, pause)
+
+    def regenerate_ideas(self, task_id: str, feedback: str, *, ideas_artifact_id: str, ideas_version: int,
+                         interrupt_id: str | None = None) -> TaskView:
+        if not isinstance(feedback, str) or not feedback.strip() or len(feedback) > 10000:
+            raise ValueError("重新生成要求必须是 1 到 10000 字的非空文字")
+        pause = self.validate_idea_action(task_id, "regenerate_ideas", ideas_artifact_id, ideas_version,
+                                         interrupt_id=interrupt_id)
+        return self._resume(task_id, {"action": "regenerate_ideas", "feedback": feedback.strip(),
+                                     "ideas_artifact_id": ideas_artifact_id, "ideas_version": ideas_version}, pause)
 
     def approve(self, task_id: str, *, interrupt_id: str | None = None) -> TaskView:
         task = self._require(task_id, "pending_review", "只有待审核的任务才能批准")
@@ -354,7 +378,7 @@ class TaskService:
 
     def retry(self, task_id: str) -> TaskView:
         """继续失败节点，已完成的图节点由检查点复用；发布回执不明时先核对平台。"""
-        task = self._require(task_id, ("failed", "submitting", "pending"), "只有未执行或执行中断的任务才能重试")
+        self._require(task_id, ("failed", "submitting", "pending"), "只有未执行或执行中断的任务才能重试")
         if self.reconcile_task(task_id):
             return self.status(task_id)
         with self._open_graph(task_id) as graph:
@@ -379,13 +403,8 @@ class TaskService:
         return task
 
     def close(self) -> None:
-        for agent in (self.research_agent, self.creation_agent, self.review_agent):
-            if isinstance(agent, StructuredModelAgent):
-                agent.close()
-        if isinstance(self.supervisor_agent, LLMSupervisorAgent):
-            self.supervisor_agent.close()
-        if isinstance(self.ideation_agent, LLMIdeationAgent):
-            self.ideation_agent.close()
+        for agent in self._model_agents:
+            agent.close()
         if self._platform_store is not None:
             self._platform_store.close()
         self.store.close()

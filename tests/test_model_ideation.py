@@ -74,7 +74,7 @@ def test_model_uses_full_context_and_scoped_skill_tools():
     assert "skill-topic-evaluator" in system
     assert "skill-quality-gate" not in system
     assert {tool.name for tool in provider.requests[0].tools} == {"load_skill", "read_skill_resource"}
-    returned = provider.requests[1].messages[-2:]
+    returned = [message for message in provider.requests[1].messages if message.role == "tool"][-2:]
     assert [message.tool_call_id for message in returned] == ["load-1", "read-1"]
     assert all(message.role == "tool" and not message.is_error for message in returned)
     assert "instructions" in returned[0].content
@@ -103,7 +103,7 @@ def test_model_events_report_skill_ids_without_private_reasoning():
 def test_tool_errors_are_returned_without_granting_access(name, args):
     provider = ScriptedProvider(tool_message(("bad-call", name, args)), answer())
     assert agent_with(provider).ideate(ContentRequest(goal="路线"), UserProfile(), [])
-    returned = provider.requests[1].messages[-1]
+    returned = next(message for message in reversed(provider.requests[1].messages) if message.role == "tool")
     assert returned.role == "tool" and returned.is_error
     assert returned.tool_call_id == "bad-call"
     assert "references/general-rules.md" not in returned.content
@@ -132,7 +132,7 @@ def test_invalid_output_never_silently_falls_back_to_mock():
     provider = ScriptedProvider(ChatMessage(role="assistant", content="invalid"),
                                 ChatMessage(role="assistant", content="still invalid"))
     with pytest.raises(LLMResponseError, match="修正次数"):
-        agent_with(provider).ideate(ContentRequest(goal="路线"), UserProfile(), [])
+        agent_with(provider, max_output_retries=1).ideate(ContentRequest(goal="路线"), UserProfile(), [])
     assert len(provider.requests) == 2
 
 
@@ -178,13 +178,18 @@ def test_both_http_protocols_support_real_skill_round_trip(protocol):
             message = ({"role": "assistant", "content": None, "reasoning_content": "opaque-reasoning", "tool_calls": calls}
                        if len(requests) == 1 else {"role": "assistant", "content": answer().content})
             if len(requests) == 2:
-                assert body["messages"][-2]["reasoning_content"] == "opaque-reasoning"
-                assert body["messages"][-1]["tool_call_id"] == "load-a"
+                assistant = next(item for item in body["messages"] if item.get("reasoning_content"))
+                result = next(item for item in body["messages"] if item.get("tool_call_id") == "load-a")
+                assert assistant["reasoning_content"] == "opaque-reasoning"
+                assert result["role"] == "tool"
             return httpx.Response(200, json={"choices": [{"message": message,
                 "finish_reason": "tool_calls" if len(requests) == 1 else "stop"}]})
         if len(requests) == 2:
-            assert body["messages"][-2]["content"] == blocks
-            assert body["messages"][-1]["content"][0]["tool_use_id"] == "load-a"
+            assistant = next(item for item in body["messages"] if item.get("content") == blocks)
+            results = [block for item in body["messages"] for block in item.get("content", [])
+                       if isinstance(block, dict) and block.get("type") == "tool_result"]
+            assert assistant["role"] == "assistant"
+            assert any(block["tool_use_id"] == "load-a" for block in results)
         return httpx.Response(200, json={"role": "assistant", "content": blocks if len(requests) == 1
                                        else [{"type": "text", "text": answer().content}],
                                        "stop_reason": "tool_use" if len(requests) == 1 else "end_turn"})
@@ -202,7 +207,9 @@ def test_task_service_defaults_to_model_and_caches_completed_ideas(data_dir):
         task = svc.create_task(ContentRequest(goal="路线"))
         assert task.status == "waiting_input"
         assert svc.candidate_ideas(task.task_id)[0].title == "周末江边散步路线"
-        assert svc.answer(task.task_id, "0").status == "pending_review"
+        pause = svc.workflow(task.task_id).interrupts[0]
+        assert svc.select_idea(task.task_id, 0, interrupt_id=pause.id,
+            ideas_artifact_id=pause.value["ideas"]["artifact_id"], ideas_version=pause.value["ideas"]["version"]).status == "pending_review"
         assert len(provider.requests) == 1
     finally:
         svc.close()
@@ -244,7 +251,7 @@ def test_missing_configuration_is_explicit_and_read_only_commands_still_work(tmp
     def unconfigured(*args, **kwargs):
         raise LLMConfigurationError("缺少配置")
 
-    monkeypatch.setattr("xhs_agent.agents.ideation.create_llm_provider", unconfigured)
+    monkeypatch.setattr("xhs_agent.agents.model.create_llm_provider", unconfigured)
     svc = TaskService(tmp_path / "data", config=AgentConfig(supervisor_backend="mock"))
     try:
         assert isinstance(svc.ideation_agent, LLMIdeationAgent)
@@ -283,7 +290,7 @@ def test_cli_loads_role_config_uses_model_and_closes_owned_provider(tmp_path, mo
         configs.append(config)
         return provider
 
-    monkeypatch.setattr("xhs_agent.agents.ideation.create_llm_provider", create)
+    monkeypatch.setattr("xhs_agent.agents.model.create_llm_provider", create)
     base = ["--data-dir", str(tmp_path / "data"), "--llm-config", str(path)]
     assert main([*base, "create", "路线"]) == 0
     assert configs[0].provider == "deepseek" and configs[0].model == "test-model"
@@ -305,13 +312,13 @@ def test_cli_reports_failed_task_id_and_can_retry_with_model(tmp_path, monkeypat
     def fail(*args, **kwargs):
         raise LLMConfigurationError("缺少配置")
 
-    monkeypatch.setattr("xhs_agent.agents.ideation.create_llm_provider", fail)
+    monkeypatch.setattr("xhs_agent.agents.model.create_llm_provider", fail)
     base = ["--data-dir", str(tmp_path / "data")]
     assert main([*base, "create", "路线"]) == 1
     error = capsys.readouterr().err
     task_id = re.search(r"xhs-[0-9a-f]+", error).group()
     assert "retry" in error
     provider = ScriptedProvider(answer())
-    monkeypatch.setattr("xhs_agent.agents.ideation.create_llm_provider", lambda config: provider)
+    monkeypatch.setattr("xhs_agent.agents.model.create_llm_provider", lambda config: provider)
     assert main([*base, "retry", task_id]) == 0
     assert provider.closed

@@ -2,11 +2,12 @@
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictInt, field_validator, model_validator
 
 from ..models import ContentRequest, TrendItem, UserProfile
 from ..platforms import AccountRef
 from ..config import ModelRole
+from ..llm import LLMConfig
 
 
 class InputModel(BaseModel):
@@ -31,6 +32,26 @@ class ResumeAction(TaskAction):
 
 class ChangeAction(ResumeAction):
     comment: str = Field(min_length=1, max_length=10000)
+
+
+class IdeaAction(ResumeAction):
+    ideas_artifact_id: str = Field(min_length=1, max_length=300)
+    ideas_version: StrictInt = Field(ge=1)
+
+
+class SelectIdeaAction(IdeaAction):
+    idea_index: StrictInt = Field(ge=0)
+
+
+class RegenerateIdeasAction(IdeaAction):
+    feedback: str = Field(min_length=1, max_length=10000)
+
+    @field_validator("feedback")
+    @classmethod
+    def nonblank(cls, value):
+        if not value.strip():
+            raise ValueError("重新生成要求不能为空")
+        return value.strip()
 
 
 class AnswerAction(ResumeAction):
@@ -114,6 +135,7 @@ class ModelSettings(InputModel):
     base_url: str | None = None
     trust_env: bool = False
     max_tokens: int = Field(default=4096, gt=0)
+    reasoning_effort: Literal["none", "low", "high", "max"] | None = None
     timeout: float = Field(default=120, gt=0)
 
     @model_validator(mode="before")
@@ -126,11 +148,14 @@ class ModelSettings(InputModel):
     @model_validator(mode="after")
     def validate_config(self):
         if self.backend == "llm":
-            from ..llm import LLMConfig
-            LLMConfig(provider=self.provider, model=self.model, api_key_env=self.api_key_env,
-                      protocol=self.protocol, base_url=self.base_url, trust_env=self.trust_env,
-                      max_tokens=self.max_tokens, timeout=self.timeout)
+            self.llm_config()
         return self
+
+    def llm_config(self, api_key: SecretStr | None = None) -> LLMConfig:
+        return LLMConfig(provider=self.provider, model=self.model, api_key_env=self.api_key_env, api_key=api_key,
+                         protocol=self.protocol, base_url=self.base_url, trust_env=self.trust_env,
+                         max_tokens=self.max_tokens, reasoning_effort=self.reasoning_effort,
+                         timeout=self.timeout)
 
 
 class ModelSettingsUpdate(ModelSettings):

@@ -16,7 +16,7 @@ rg "TASK_ID" data/logs
 | --- | --- |
 | `task_id` | 整个创作任务的标识 |
 | `run_id` | 本次启动、恢复或重试的执行标识，同一任务可以有多次运行 |
-| `node` | LangGraph 节点，例如 supervisor、execute_agent、ask_user、review、publish |
+| `node` | LangGraph 节点，例如 supervisor、execute_agent、select_idea、ask_user、review、publish |
 | `agent_id` | 实际处理工作的角色；人工 review 门禁与专业 review Agent 可通过 node/agent_id 区分 |
 | `delegation_id` | 本次专业委派；模型及工具事件继承同一标识 |
 | `kind` | 事件类型 |
@@ -34,7 +34,7 @@ rg "TASK_ID" data/logs
 - `output_validation`：校验失败原因、修正次数及是否继续。
 - `graph_paused/completed`、`user_action`：暂停位置与恢复、批准、发布等人工操作。
 
-排查“直接采用候选 0”时，按 `task_id` 依次看 `supervisor_decision` 和 `delegation_started` 的 `idea_index`，并检查之前是否有 `node_paused`（ask_user）以及 `user_action`（answer）。日志记录实际发生的流程，不会额外增加人工确认或改变选题规则。`cached=true` 表示本次复用了已保存的决策或委派结果。
+选题结果返回后应看到 `node_paused`（select_idea）；用户确认后出现 `user_action`（select_idea）和 `idea_selected`，后者包含从 0 开始的 `idea_index` 以及候选集与选定方向的产物引用。后续委派通常直接引用 `idea`，不必重复填写序号。重新生成记录为 `user_action`（regenerate_ideas），新候选仍须再次确认。`cached=true` 表示本次复用了已保存的决策或委派结果。
 
 日志记录公开任务要求和执行摘要，不记录模型请求/响应原文、技能正文、工具结果正文、图片 base64 或内部推理。配置及环境中的密钥、Bearer 凭据和常见密钥格式会脱敏；产物仅记录逻辑引用。异常包含安全处理后的消息以及文件名、函数名、行号，不记录局部变量。默认日志位于已被 Git 忽略的 `data/` 下。
 
